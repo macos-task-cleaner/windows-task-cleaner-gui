@@ -321,7 +321,7 @@ impl WhitelistManager {
         list
     }
 
-    fn get_config_path() -> PathBuf {
+    pub fn get_config_path() -> PathBuf {
         if let Ok(app_data) = std::env::var("APPDATA") {
             PathBuf::from(app_data).join("TaskCleaner").join("config.toml")
         } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
@@ -332,6 +332,13 @@ impl WhitelistManager {
         } else {
             PathBuf::from("config.toml")
         }
+    }
+
+    pub fn get_config_dir() -> PathBuf {
+        Self::get_config_path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     fn load_user_config(&mut self) {

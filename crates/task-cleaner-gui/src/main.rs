@@ -10,12 +10,15 @@ mod win_gui {
     use std::collections::HashMap;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::time::Instant;
 
+    use serde::{Deserialize, Serialize};
     use task_cleaner_core::{
-        get_caller_lineage, scan_foreground_apps, sort_targets, tiered_terminate, AppTarget,
+        detect_system_language, get_caller_lineage, purge_process_working_set, scan_foreground_apps,
+        sort_targets, tiered_terminate, tr, AppTarget, I18nKey, Language, LanguagePreference,
         SortMode, TerminationMode, WhitelistManager, WhitelistMatch,
     };
     use windows_sys::Win32::Foundation::{
@@ -25,12 +28,13 @@ mod win_gui {
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, BitBlt, ClientToScreen, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-        CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-        GetDC, GetMonitorInfoW, GetStockObject, MonitorFromPoint, ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor,
-        BLACK_BRUSH, CLEARTYPE_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-        DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC,
-        HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
+        BeginPaint, BitBlt, ClientToScreen, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC,
+        CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
+        FillRect, GetDC, GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint, ReleaseDC,
+        RoundRect, SelectObject, SetBkMode, SetTextColor, BLACK_BRUSH, CLEARTYPE_QUALITY, DT_CENTER,
+        DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM,
+        FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -48,51 +52,77 @@ mod win_gui {
         TRACKMOUSEEVENT,
     };
     use windows_sys::Win32::UI::Shell::{
-        ExtractIconExW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
-        NIF_TIP, NIM_ADD, NIM_DELETE,
+        ExtractIconExW, ShellExecuteExW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
+        NIF_TIP, NIM_ADD, NIM_DELETE, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyIcon, DestroyMenu, DispatchMessageW, DrawIconEx, GetCursorPos, GetMessageW,
-        GetSystemMetrics, LoadCursorW, ICONINFO, IDC_ARROW, MF_CHECKED, MF_SEPARATOR,
-        MF_STRING, MSG, PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowPos,
-        ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW,
-        DI_NORMAL, HICON, HMENU, HWND_TOPMOST, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA,
-        SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
-        TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY,
-        WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_USER, WNDCLASSEXW,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        GetSystemMetrics, KillTimer, LoadCursorW, MessageBoxW, PostQuitMessage, RegisterClassExW,
+        SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW,
+        TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST,
+        ICONINFO, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
+        MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
+        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE,
+        WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+        WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
     const WM_MOUSELEAVE: u32 = 0x02A3;
     const HOTKEY_TOGGLE_ID: i32 = 0x1001;
+    const TIMER_HEARTBEAT_ID: usize = 1002;
 
-    // 菜单 ID 定义
+    // 基础菜单 ID 定义
     const IDM_OPEN: usize = 1001;
     const IDM_REFRESH: usize = 1002;
     const IDM_CLEAN_ALL: usize = 1003;
     const IDM_QUIT: usize = 1005;
 
+    // 排序菜单 ID
     const IDM_SORT_COMPOSITE: usize = 1101;
     const IDM_SORT_MEMORY: usize = 1102;
     const IDM_SORT_CPU: usize = 1103;
     const IDM_SORT_WINDOWS: usize = 1104;
     const IDM_SORT_DEFAULT: usize = 1105;
 
+    // 核心卡片操作下拉菜单 ID
     const IDM_ACTION_GRACEFUL: usize = 1201;
     const IDM_ACTION_FORCE: usize = 1202;
+    const IDM_ACTION_PURGE: usize = 1203;
 
+    // 列表行操作菜单 ID
     const IDM_ROW_WHITELIST_ADD: usize = 1301;
     const IDM_ROW_WHITELIST_REMOVE: usize = 1302;
     const IDM_ROW_REVEAL: usize = 1303;
     const IDM_ROW_COPY_NAME: usize = 1304;
     const IDM_ROW_COPY_PID: usize = 1305;
     const IDM_ROW_FORCE_KILL: usize = 1306;
+    const IDM_ROW_PURGE_MEMORY: usize = 1307;
+    const IDM_ROW_PROPERTIES: usize = 1308;
 
+    // 底栏设置菜单 ID
     const IDM_CFG_STARTUP: usize = 1401;
     const IDM_CFG_RELOAD: usize = 1402;
     const IDM_CFG_ABOUT: usize = 1403;
+    const IDM_CFG_OPEN_FILE: usize = 1404;
+    const IDM_CFG_OPEN_DIR: usize = 1405;
+    const IDM_CFG_GITHUB: usize = 1406;
+
+    // 显示偏好开关 ID
+    const IDM_CFG_TOGGLE_DETAILED_METRICS: usize = 1410;
+    const IDM_CFG_TOGGLE_APP_ID: usize = 1411;
+    const IDM_CFG_TOGGLE_SORT_BTN: usize = 1412;
+
+    // CLI 工具管理 ID
+    const IDM_CLI_INSTALL_USER: usize = 1420;
+    const IDM_CLI_TEST_TERMINAL: usize = 1421;
+    const IDM_CLI_REVEAL: usize = 1422;
+    const IDM_CLI_UNINSTALL: usize = 1423;
+
+    // 语言切换菜单基址 (支持 24 种语言 + 自动)
+    const IDM_LANG_AUTO: usize = 1500;
+    const IDM_LANG_BASE: usize = 1501;
 
     // 窗口尺寸: 严格对齐 macOS 版精修比例 (宽 320, 高 480)
     const WINDOW_WIDTH: i32 = 320;
@@ -137,17 +167,158 @@ mod win_gui {
     static IS_VISIBLE: AtomicBool = AtomicBool::new(false);
     static IS_MENU_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+    /// GUI 持久化偏好设置
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct GuiPreferences {
+        #[serde(default)]
+        pub language_pref: LanguagePreference,
+        #[serde(default = "default_sort_mode")]
+        pub sort_mode: SortMode,
+        #[serde(default = "default_true")]
+        pub show_detailed_metrics: bool,
+        #[serde(default = "default_false")]
+        pub show_app_identifier: bool,
+        #[serde(default = "default_true")]
+        pub show_sort_button: bool,
+    }
+
+    fn default_sort_mode() -> SortMode {
+        SortMode::Composite
+    }
+    fn default_true() -> bool {
+        true
+    }
+    fn default_false() -> bool {
+        false
+    }
+
+    impl Default for GuiPreferences {
+        fn default() -> Self {
+            Self {
+                language_pref: LanguagePreference::Auto,
+                sort_mode: SortMode::Composite,
+                show_detailed_metrics: true,
+                show_app_identifier: false,
+                show_sort_button: true,
+            }
+        }
+    }
+
+    impl GuiPreferences {
+        pub fn load() -> Self {
+            let path = WhitelistManager::get_config_dir().join("gui_settings.json");
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(prefs) = serde_json::from_str::<GuiPreferences>(&content) {
+                    return prefs;
+                }
+            }
+            Self::default()
+        }
+
+        pub fn save(&self) {
+            let dir = WhitelistManager::get_config_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("gui_settings.json");
+            if let Ok(json) = serde_json::to_string_pretty(self) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+
+    /// CLI 工具 (mtc.exe) 系统集成管理器
+    struct CliManager;
+
+    impl CliManager {
+        fn candidate_user_dirs() -> Vec<PathBuf> {
+            let mut dirs = Vec::new();
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                dirs.push(PathBuf::from(local_app_data).join("Microsoft").join("WindowsApps"));
+            }
+            if let Ok(user_profile) = std::env::var("USERPROFILE") {
+                dirs.push(PathBuf::from(user_profile).join(".local").join("bin"));
+            }
+            dirs
+        }
+
+        fn get_bundled_cli_path() -> Option<PathBuf> {
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(parent) = exe.parent() {
+                    let candidate = parent.join("mtc.exe");
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            None
+        }
+
+        fn find_installed_cli() -> Option<PathBuf> {
+            for dir in Self::candidate_user_dirs() {
+                let path = dir.join("mtc.exe");
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+            None
+        }
+
+        fn is_installed() -> bool {
+            Self::find_installed_cli().is_some()
+        }
+
+        fn install() -> Result<PathBuf, String> {
+            let bundled = Self::get_bundled_cli_path()
+                .ok_or_else(|| "未在应用目录下找到配套的 mtc.exe".to_string())?;
+            let target_dirs = Self::candidate_user_dirs();
+            let target_dir = target_dirs
+                .first()
+                .ok_or_else(|| "无法获取用户应用路径".to_string())?;
+            let _ = std::fs::create_dir_all(target_dir);
+            let dest = target_dir.join("mtc.exe");
+            std::fs::copy(&bundled, &dest).map_err(|e| format!("复制失败: {}", e))?;
+            Ok(dest)
+        }
+
+        fn uninstall() -> Result<(), String> {
+            if let Some(installed) = Self::find_installed_cli() {
+                std::fs::remove_file(installed).map_err(|e| format!("删除失败: {}", e))?;
+            }
+            Ok(())
+        }
+
+        fn test_in_terminal() {
+            let wt_res = std::process::Command::new("wt.exe")
+                .args(["powershell.exe", "-NoExit", "-Command", "mtc -n"])
+                .spawn();
+            if wt_res.is_err() {
+                let _ = std::process::Command::new("powershell.exe")
+                    .args(["-NoExit", "-Command", "mtc -n"])
+                    .spawn();
+            }
+        }
+
+        fn reveal_in_explorer() {
+            if let Some(p) = Self::find_installed_cli().or_else(Self::get_bundled_cli_path) {
+                let _ = std::process::Command::new("explorer.exe")
+                    .arg(format!("/select,{}", p.to_string_lossy()))
+                    .spawn();
+            }
+        }
+    }
+
     struct GuiState {
         whitelist: WhitelistManager,
         targets: Vec<AppTarget>,
         protected: Vec<(AppTarget, WhitelistMatch)>,
-        sort_mode: SortMode,
+        prefs: GuiPreferences,
+        active_language: Language,
         active_tab: usize, // 0: 待结束, 1: 已保护, 2: 全部活动
         scroll_offset: usize,
         hovered_row: Option<usize>,
         hovered_btn: Option<HoverButton>,
         icon_cache: HashMap<String, isize>,
         status_message: Option<String>,
+        status_timestamp: Option<Instant>,
         last_scan: Instant,
     }
 
@@ -163,6 +334,7 @@ mod win_gui {
         RowMore(usize),
         ViewAllFromEmpty,
         Settings,
+        Language,
         Quit,
     }
 
@@ -172,7 +344,7 @@ mod win_gui {
         OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    /// 应用名本地化与友好解析 (告别裸露的 .exe 粗糙毛胚感)
+    /// 应用名本地化与友好解析
     fn resolve_friendly_name(app: &AppTarget) -> String {
         let name_lower = app.name.to_lowercase();
         match name_lower.as_str() {
@@ -199,7 +371,9 @@ mod win_gui {
                 let clean_title = app.title.trim();
                 if !clean_title.is_empty() && clean_title.chars().count() <= 20 {
                     clean_title.to_string()
-                } else if let Some(stem) = std::path::Path::new(&app.name).file_stem().and_then(|s| s.to_str()) {
+                } else if let Some(stem) =
+                    std::path::Path::new(&app.name).file_stem().and_then(|s| s.to_str())
+                {
                     stem.to_string()
                 } else {
                     app.name.clone()
@@ -208,7 +382,7 @@ mod win_gui {
         }
     }
 
-    /// 提取真实高分辨率应用图标 (Win32 Shell ExtractIconEx)
+    /// 提取真实高分辨率应用图标
     unsafe fn get_app_icon(exe_path: &str, cache: &mut HashMap<String, isize>) -> Option<HICON> {
         if exe_path.is_empty() {
             return None;
@@ -231,7 +405,7 @@ mod win_gui {
         }
     }
 
-    /// 动态合成现代极简胶囊 X 几何托盘图标 (无外部资源依赖，100% 独立稳定)
+    /// 动态合成现代极简胶囊 X 几何托盘图标
     unsafe fn create_default_tray_icon() -> HICON {
         let cx = GetSystemMetrics(SM_CXSMICON).max(16);
         let cy = GetSystemMetrics(SM_CYSMICON).max(16);
@@ -243,10 +417,14 @@ mod win_gui {
 
         ReleaseDC(0 as HWND, screen_dc);
 
-        // 1. 绘制彩色底板与标志 (Windows 经典 Accent 蓝底)
         let h_old = SelectObject(hdc, hbm_color);
         let bg_brush = CreateSolidBrush(COLOR_ACCENT_BLUE);
-        let rect = RECT { left: 0, top: 0, right: cx, bottom: cy };
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: cx,
+            bottom: cy,
+        };
         FillRect(hdc, &rect, bg_brush);
         DeleteObject(bg_brush);
 
@@ -263,7 +441,6 @@ mod win_gui {
 
         SelectObject(hdc, h_old);
 
-        // 2. 初始化 Mask 蒙版为全黑 (0 = 100% 不透明，杜绝噪点棋盘杂色)
         let mask_old = SelectObject(hdc, hbm_mask);
         let black_brush = GetStockObject(BLACK_BRUSH as i32);
         FillRect(hdc, &rect, black_brush as HBRUSH);
@@ -285,7 +462,7 @@ mod win_gui {
         h_icon
     }
 
-    /// 高精度圆角矩形渲染助手 (彻底杜绝 GDI 默认粗黑边框，打造 Apple/Fluent 2.0 质感)
+    /// 高精度圆角矩形渲染助手
     unsafe fn draw_rounded_box(
         hdc: HDC,
         rect: &RECT,
@@ -330,6 +507,27 @@ mod win_gui {
         )
     }
 
+    /// 弹出原生 Windows 文件属性对话框
+    unsafe fn show_file_properties(exe_path: &str) {
+        if exe_path.is_empty() {
+            return;
+        }
+        let wpath = to_wstring(exe_path);
+        let wverb = to_wstring("properties");
+        let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
+        sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        sei.fMask = SEE_MASK_INVOKEIDLIST;
+        sei.lpVerb = wverb.as_ptr();
+        sei.lpFile = wpath.as_ptr();
+        sei.nShow = 1; // SW_SHOWNORMAL
+        let res = ShellExecuteExW(&mut sei);
+        if res == 0 {
+            let _ = std::process::Command::new("explorer.exe")
+                .arg(format!("/select,{}", exe_path))
+                .spawn();
+        }
+    }
+
     fn refresh_scan() {
         let mut state_guard = STATE.lock().unwrap();
         if let Some(state) = state_guard.as_mut() {
@@ -347,7 +545,7 @@ mod win_gui {
                 }
             }
 
-            sort_targets(&mut targets, state.sort_mode);
+            sort_targets(&mut targets, state.prefs.sort_mode);
 
             state.targets = targets;
             state.protected = protected;
@@ -356,7 +554,40 @@ mod win_gui {
         }
     }
 
-    /// 自动将窗口精确吸附在屏幕右下角任务栏正上方 (支持多显示器、任意分辨率与任务栏位置)
+    fn refresh_scan_silent() {
+        let mut state_guard = STATE.lock().unwrap();
+        if let Some(state) = state_guard.as_mut() {
+            let caller_lineage = get_caller_lineage();
+            let mut scanned = scan_foreground_apps();
+
+            let mut targets = Vec::new();
+            let mut protected = Vec::new();
+
+            for app in scanned.drain(..) {
+                if let Some(matched) = state.whitelist.classify(&app, &caller_lineage) {
+                    protected.push((app, matched));
+                } else {
+                    targets.push(app);
+                }
+            }
+
+            sort_targets(&mut targets, state.prefs.sort_mode);
+
+            state.targets = targets;
+            state.protected = protected;
+            state.last_scan = Instant::now();
+
+            // 状态提示气泡若超过 3 秒自动平滑隐退
+            if let Some(ts) = state.status_timestamp {
+                if ts.elapsed().as_secs() >= 3 {
+                    state.status_message = None;
+                    state.status_timestamp = None;
+                }
+            }
+        }
+    }
+
+    /// 自动将窗口精确吸附在屏幕右下角任务栏正上方
     unsafe fn position_window(hwnd: HWND) {
         let mut cursor: POINT = std::mem::zeroed();
         GetCursorPos(&mut cursor);
@@ -399,7 +630,7 @@ mod win_gui {
         );
     }
 
-    /// 原生 Win32 零延迟剪贴板复制 (替代开销巨大的 powershell 子进程)
+    /// 原生 Win32 零延迟剪贴板复制
     unsafe fn copy_to_clipboard(hwnd: HWND, text: &str) -> bool {
         let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
         let bytes = wide.len() * std::mem::size_of::<u16>();
@@ -467,7 +698,9 @@ mod win_gui {
                 let bytes = (wide_path.len() * 2) as u32;
 
                 let mut hkey = std::ptr::null_mut();
-                if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) == 0 {
+                if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut hkey)
+                    == 0
+                {
                     RegSetValueExW(
                         hkey,
                         val_name.as_ptr(),
@@ -484,15 +717,16 @@ mod win_gui {
     }
 
     unsafe fn show_tray_context_menu(hwnd: HWND) {
+        let lang = STATE.lock().unwrap().as_ref().map(|s| s.active_language).unwrap_or(Language::En);
         let mut pt: POINT = std::mem::zeroed();
         GetCursorPos(&mut pt);
 
         let menu: HMENU = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, IDM_OPEN, to_wstring("打开 Task Cleaner").as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_REFRESH, to_wstring("重新扫描").as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_CLEAN_ALL, to_wstring("清理未受保护任务").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_REFRESH, to_wstring(tr(I18nKey::HeaderRefreshHelp, lang)).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_CLEAN_ALL, to_wstring(tr(I18nKey::BtnTerminate, lang)).as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_QUIT, to_wstring("退出").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_QUIT, to_wstring(tr(I18nKey::BtnQuit, lang)).as_ptr());
 
         SetForegroundWindow(hwnd);
         IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
@@ -514,16 +748,16 @@ mod win_gui {
                 ShowWindow(hwnd, SW_SHOW);
                 SetForegroundWindow(hwnd);
                 IS_VISIBLE.store(true, Ordering::SeqCst);
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_REFRESH => {
                 refresh_scan();
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CLEAN_ALL => {
                 execute_clean_all(TerminationMode::Standard);
                 refresh_scan();
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_QUIT => {
                 PostQuitMessage(0);
@@ -533,19 +767,23 @@ mod win_gui {
     }
 
     unsafe fn show_sort_menu(hwnd: HWND) {
-        let cur_mode = STATE.lock().unwrap().as_ref().map(|s| s.sort_mode).unwrap_or_default();
-        let menu: HMENU = CreatePopupMenu();
+        let (cur_mode, lang) = {
+            let state = STATE.lock().unwrap();
+            let s = state.as_ref().unwrap();
+            (s.prefs.sort_mode, s.active_language)
+        };
 
+        let menu: HMENU = CreatePopupMenu();
         let add_item = |m: HMENU, id: usize, title: &str, checked: bool| {
             let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
             AppendMenuW(m, flags, id, to_wstring(title).as_ptr());
         };
 
-        add_item(menu, IDM_SORT_COMPOSITE, "综合负载", cur_mode == SortMode::Composite);
-        add_item(menu, IDM_SORT_MEMORY, "内存占用", cur_mode == SortMode::Memory);
-        add_item(menu, IDM_SORT_CPU, "CPU 占用", cur_mode == SortMode::Cpu);
-        add_item(menu, IDM_SORT_WINDOWS, "窗口数量", cur_mode == SortMode::Windows);
-        add_item(menu, IDM_SORT_DEFAULT, "默认字母", cur_mode == SortMode::Default);
+        add_item(menu, IDM_SORT_COMPOSITE, tr(I18nKey::SortComposite, lang), cur_mode == SortMode::Composite);
+        add_item(menu, IDM_SORT_MEMORY, tr(I18nKey::SortMemory, lang), cur_mode == SortMode::Memory);
+        add_item(menu, IDM_SORT_CPU, tr(I18nKey::SortCpu, lang), cur_mode == SortMode::Cpu);
+        add_item(menu, IDM_SORT_WINDOWS, tr(I18nKey::SortWindows, lang), cur_mode == SortMode::Windows);
+        add_item(menu, IDM_SORT_DEFAULT, tr(I18nKey::SortDefault, lang), cur_mode == SortMode::Default);
 
         let mut pt = POINT { x: 260, y: 38 };
         ClientToScreen(hwnd, &mut pt);
@@ -563,12 +801,13 @@ mod win_gui {
         IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
-        let mut state_guard = STATE.lock().unwrap();
-        if let Some(state) = state_guard.as_mut() {
-            state.hovered_btn = None;
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+            }
         }
-        drop(state_guard);
-        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+        InvalidateRect(hwnd, std::ptr::null(), 0);
 
         let new_mode = match cmd as usize {
             IDM_SORT_COMPOSITE => Some(SortMode::Composite),
@@ -582,17 +821,21 @@ mod win_gui {
         if let Some(mode) = new_mode {
             let mut state_guard = STATE.lock().unwrap();
             if let Some(state) = state_guard.as_mut() {
-                state.sort_mode = mode;
+                state.prefs.sort_mode = mode;
+                state.prefs.save();
                 sort_targets(&mut state.targets, mode);
             }
-            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            InvalidateRect(hwnd, std::ptr::null(), 1);
         }
     }
 
     unsafe fn show_action_chevron_menu(hwnd: HWND) {
+        let lang = STATE.lock().unwrap().as_ref().map(|s| s.active_language).unwrap_or(Language::En);
         let menu: HMENU = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, IDM_ACTION_GRACEFUL, to_wstring("常规结束 (标准模式)").as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ACTION_FORCE, to_wstring("强制结束 (彻底清理)").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ACTION_GRACEFUL, to_wstring(tr(I18nKey::ActionCleanGraceful, lang)).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ACTION_FORCE, to_wstring(tr(I18nKey::ActionCleanForce, lang)).as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(menu, MF_STRING, IDM_ACTION_PURGE, to_wstring(tr(I18nKey::ActionCleanPurge, lang)).as_ptr());
 
         let mut pt = POINT { x: 298, y: 124 };
         ClientToScreen(hwnd, &mut pt);
@@ -610,44 +853,53 @@ mod win_gui {
         IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
-        let mut state_guard = STATE.lock().unwrap();
-        if let Some(state) = state_guard.as_mut() {
-            state.hovered_btn = None;
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+            }
         }
-        drop(state_guard);
-        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+        InvalidateRect(hwnd, std::ptr::null(), 0);
 
         match cmd as usize {
             IDM_ACTION_GRACEFUL => {
                 execute_clean_all(TerminationMode::Standard);
                 refresh_scan();
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ACTION_FORCE => {
                 execute_clean_all(TerminationMode::ForceImmediate);
                 refresh_scan();
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_ACTION_PURGE => {
+                execute_clean_all(TerminationMode::PurgeWorkingSet);
+                refresh_scan_silent();
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             _ => {}
         }
     }
 
     unsafe fn show_row_more_menu(hwnd: HWND, actual_idx: usize, is_protected_tab: bool) {
-        let mut app_info = None;
-        {
+        let (app_info, lang) = {
             let state_guard = STATE.lock().unwrap();
-            if let Some(state) = state_guard.as_ref() {
-                if is_protected_tab {
-                    if actual_idx < state.protected.len() {
-                        app_info = Some((state.protected[actual_idx].0.clone(), true));
-                    }
+            let state = state_guard.as_ref().unwrap();
+            let info = if is_protected_tab {
+                if actual_idx < state.protected.len() {
+                    Some((state.protected[actual_idx].0.clone(), true))
                 } else {
-                    if actual_idx < state.targets.len() {
-                        app_info = Some((state.targets[actual_idx].clone(), false));
-                    }
+                    None
                 }
-            }
-        }
+            } else {
+                if actual_idx < state.targets.len() {
+                    Some((state.targets[actual_idx].clone(), false))
+                } else {
+                    None
+                }
+            };
+            (info, state.active_language)
+        };
 
         let (app, is_protected) = match app_info {
             Some(v) => v,
@@ -656,15 +908,19 @@ mod win_gui {
 
         let menu: HMENU = CreatePopupMenu();
         if is_protected {
-            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_REMOVE, to_wstring("移出保护名单").as_ptr());
+            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_REMOVE, to_wstring(tr(I18nKey::RowRemoveWhitelist, lang)).as_ptr());
+            AppendMenuW(menu, MF_STRING, IDM_ROW_PURGE_MEMORY, to_wstring(tr(I18nKey::RowPurgeMemory, lang)).as_ptr());
         } else {
-            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_ADD, to_wstring("加入保护名单").as_ptr());
-            AppendMenuW(menu, MF_STRING, IDM_ROW_FORCE_KILL, to_wstring("强制结束任务").as_ptr());
+            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_ADD, to_wstring(tr(I18nKey::RowAddWhitelist, lang)).as_ptr());
+            AppendMenuW(menu, MF_STRING, IDM_ROW_FORCE_KILL, to_wstring(tr(I18nKey::RowForceKill, lang)).as_ptr());
+            AppendMenuW(menu, MF_STRING, IDM_ROW_PURGE_MEMORY, to_wstring(tr(I18nKey::RowPurgeMemory, lang)).as_ptr());
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_REVEAL, to_wstring("在资源管理器中显示").as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_NAME, to_wstring("复制进程名称").as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PID, to_wstring("复制 PID").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_REVEAL, to_wstring(tr(I18nKey::RowRevealInExplorer, lang)).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_NAME, to_wstring(tr(I18nKey::RowCopyName, lang)).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PID, to_wstring(tr(I18nKey::RowCopyPid, lang)).as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_PROPERTIES, to_wstring(tr(I18nKey::RowProperties, lang)).as_ptr());
 
         let mut pt: POINT = std::mem::zeroed();
         GetCursorPos(&mut pt);
@@ -682,37 +938,52 @@ mod win_gui {
         IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
-        let mut state_guard = STATE.lock().unwrap();
-        if let Some(state) = state_guard.as_mut() {
-            state.hovered_btn = None;
-            state.hovered_row = None;
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+                state.hovered_row = None;
+            }
         }
-        drop(state_guard);
-        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+        InvalidateRect(hwnd, std::ptr::null(), 0);
 
         match cmd as usize {
             IDM_ROW_WHITELIST_ADD => {
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.whitelist.add_user_rule(&app.name);
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.whitelist.add_user_rule(&app.name);
+                    }
                 }
-                drop(state_guard);
                 refresh_scan();
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_WHITELIST_REMOVE => {
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.whitelist.remove_user_rule(&app.name);
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.whitelist.remove_user_rule(&app.name);
+                    }
                 }
-                drop(state_guard);
                 refresh_scan();
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_FORCE_KILL => {
                 tiered_terminate(&[app], TerminationMode::ForceImmediate, 0, &WhitelistManager::new());
                 refresh_scan();
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_ROW_PURGE_MEMORY => {
+                purge_process_working_set(app.pid);
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some(format!("{}: {}", tr(I18nKey::ActionCleanPurge, lang), app.name));
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                }
+                refresh_scan_silent();
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_REVEAL => {
                 if !app.exe_path.is_empty() {
@@ -723,39 +994,107 @@ mod win_gui {
             }
             IDM_ROW_COPY_NAME => {
                 copy_to_clipboard(hwnd, &app.name);
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some(format!("已复制名称: {}", app.name));
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some(format!("{}: {}", tr(I18nKey::RowCopyName, lang), app.name));
+                        state.status_timestamp = Some(Instant::now());
+                    }
                 }
-                drop(state_guard);
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_COPY_PID => {
                 copy_to_clipboard(hwnd, &format!("{}", app.pid));
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some(format!("已复制 PID: {}", app.pid));
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some(format!("{}: {}", tr(I18nKey::RowCopyPid, lang), app.pid));
+                        state.status_timestamp = Some(Instant::now());
+                    }
                 }
-                drop(state_guard);
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_ROW_PROPERTIES => {
+                show_file_properties(&app.exe_path);
             }
             _ => {}
         }
     }
 
     unsafe fn show_settings_menu(hwnd: HWND) {
+        let (lang, prefs) = {
+            let state = STATE.lock().unwrap();
+            let s = state.as_ref().unwrap();
+            (s.active_language, s.prefs.clone())
+        };
+
         let menu: HMENU = CreatePopupMenu();
         let autostart_on = is_autostart_enabled();
-        let autostart_label = if autostart_on {
-            "开机自启动 [已启用 √]"
-        } else {
-            "开机自启动 [未启用]"
-        };
+        let autostart_label = format!(
+            "{} {}",
+            tr(I18nKey::MenuLaunchAtLogin, lang),
+            if autostart_on { "[已启用 √]" } else { "[未启用]" }
+        );
         let autostart_flags = MF_STRING | if autostart_on { MF_CHECKED } else { 0 };
-        AppendMenuW(menu, autostart_flags, IDM_CFG_STARTUP, to_wstring(autostart_label).as_ptr());
+        AppendMenuW(menu, autostart_flags, IDM_CFG_STARTUP, to_wstring(&autostart_label).as_ptr());
+
+        let shortcut_label = format!("{}: Ctrl + Alt + K", tr(I18nKey::MenuGlobalShortcut, lang));
+        AppendMenuW(menu, MF_STRING, 0, to_wstring(&shortcut_label).as_ptr());
+
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+
+        // 1. CLI 工具子菜单 (mtc)
+        let cli_menu: HMENU = CreatePopupMenu();
+        let cli_installed = CliManager::is_installed();
+        let cli_status_str = if cli_installed {
+            format!("{}: [OK]", tr(I18nKey::CliStatusInstalled, lang))
+        } else {
+            format!("{}: [未安装]", tr(I18nKey::CliStatusNotInstalled, lang))
+        };
+        AppendMenuW(cli_menu, MF_STRING, 0, to_wstring(&cli_status_str).as_ptr());
+        AppendMenuW(cli_menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(cli_menu, MF_STRING, IDM_CLI_INSTALL_USER, to_wstring(tr(I18nKey::CliMenuInstallUser, lang)).as_ptr());
+        if cli_installed {
+            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_TEST_TERMINAL, to_wstring(tr(I18nKey::CliMenuTest, lang)).as_ptr());
+            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_REVEAL, to_wstring(tr(I18nKey::CliMenuReveal, lang)).as_ptr());
+            AppendMenuW(cli_menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_UNINSTALL, to_wstring(tr(I18nKey::CliMenuUninstall, lang)).as_ptr());
+        }
+        let cli_title = format!("{}: {}", tr(I18nKey::MenuCliTools, lang), if cli_installed { "就绪" } else { "未配置" });
+        AppendMenuW(menu, MF_POPUP, cli_menu as usize, to_wstring(&cli_title).as_ptr());
+
+        // 2. 排序方式子菜单
+        let sort_menu: HMENU = CreatePopupMenu();
+        let add_sort = |m: HMENU, id: usize, title: &str, checked: bool| {
+            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
+            AppendMenuW(m, flags, id, to_wstring(title).as_ptr());
+        };
+        add_sort(sort_menu, IDM_SORT_COMPOSITE, tr(I18nKey::SortComposite, lang), prefs.sort_mode == SortMode::Composite);
+        add_sort(sort_menu, IDM_SORT_MEMORY, tr(I18nKey::SortMemory, lang), prefs.sort_mode == SortMode::Memory);
+        add_sort(sort_menu, IDM_SORT_CPU, tr(I18nKey::SortCpu, lang), prefs.sort_mode == SortMode::Cpu);
+        add_sort(sort_menu, IDM_SORT_WINDOWS, tr(I18nKey::SortWindows, lang), prefs.sort_mode == SortMode::Windows);
+        add_sort(sort_menu, IDM_SORT_DEFAULT, tr(I18nKey::SortDefault, lang), prefs.sort_mode == SortMode::Default);
+        let sort_title = format!("{}: {}", tr(I18nKey::MenuSortBy, lang), prefs.sort_mode.label());
+        AppendMenuW(menu, MF_POPUP, sort_menu as usize, to_wstring(&sort_title).as_ptr());
+
+        // 3. 显示偏好子菜单
+        let display_menu: HMENU = CreatePopupMenu();
+        let add_disp = |m: HMENU, id: usize, title: &str, checked: bool| {
+            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
+            AppendMenuW(m, flags, id, to_wstring(title).as_ptr());
+        };
+        add_disp(display_menu, IDM_CFG_TOGGLE_DETAILED_METRICS, tr(I18nKey::MenuShowDetailedMetrics, lang), prefs.show_detailed_metrics);
+        add_disp(display_menu, IDM_CFG_TOGGLE_APP_ID, tr(I18nKey::MenuShowAppIdentifier, lang), prefs.show_app_identifier);
+        add_disp(display_menu, IDM_CFG_TOGGLE_SORT_BTN, tr(I18nKey::MenuShowSortButton, lang), prefs.show_sort_button);
+        AppendMenuW(menu, MF_POPUP, display_menu as usize, to_wstring("界面显示偏好").as_ptr());
+
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(menu, MF_STRING, IDM_CFG_OPEN_FILE, to_wstring(tr(I18nKey::MenuOpenConfigFile, lang)).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_CFG_OPEN_DIR, to_wstring(tr(I18nKey::MenuOpenConfigDir, lang)).as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_CFG_RELOAD, to_wstring("重新加载白名单规则").as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring("关于 Task Cleaner (Windows 11)").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_CFG_GITHUB, to_wstring(tr(I18nKey::MenuGithubRepo, lang)).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring(tr(I18nKey::BtnAbout, lang)).as_ptr());
 
         let mut pt = POINT { x: 14, y: 444 };
         ClientToScreen(hwnd, &mut pt);
@@ -773,12 +1112,13 @@ mod win_gui {
         IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
-        let mut state_guard = STATE.lock().unwrap();
-        if let Some(state) = state_guard.as_mut() {
-            state.hovered_btn = None;
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+            }
         }
-        drop(state_guard);
-        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+        InvalidateRect(hwnd, std::ptr::null(), 0);
 
         match cmd as usize {
             IDM_CFG_STARTUP => {
@@ -788,36 +1128,195 @@ mod win_gui {
                 } else {
                     "已关闭开机自动启动"
                 };
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some(status.to_string());
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some(status.to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
                 }
-                drop(state_guard);
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CFG_RELOAD => {
                 refresh_scan();
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some("白名单规则已重载".to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_TOGGLE_DETAILED_METRICS => {
                 let mut state_guard = STATE.lock().unwrap();
                 if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some("白名单规则已重载".to_string());
+                    state.prefs.show_detailed_metrics = !state.prefs.show_detailed_metrics;
+                    state.prefs.save();
                 }
-                drop(state_guard);
-                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_TOGGLE_APP_ID => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.show_app_identifier = !state.prefs.show_app_identifier;
+                    state.prefs.save();
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_TOGGLE_SORT_BTN => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.show_sort_button = !state.prefs.show_sort_button;
+                    state.prefs.save();
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_SORT_COMPOSITE | IDM_SORT_MEMORY | IDM_SORT_CPU | IDM_SORT_WINDOWS | IDM_SORT_DEFAULT => {
+                let new_mode = match cmd as usize {
+                    IDM_SORT_COMPOSITE => SortMode::Composite,
+                    IDM_SORT_MEMORY => SortMode::Memory,
+                    IDM_SORT_CPU => SortMode::Cpu,
+                    IDM_SORT_WINDOWS => SortMode::Windows,
+                    _ => SortMode::Default,
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.sort_mode = new_mode;
+                    state.prefs.save();
+                    sort_targets(&mut state.targets, new_mode);
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CLI_INSTALL_USER => {
+                let res = CliManager::install();
+                let status = match res {
+                    Ok(p) => format!("CLI 已成功安装至: {}", p.display()),
+                    Err(e) => format!("CLI 安装失败: {}", e),
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(status);
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CLI_TEST_TERMINAL => {
+                CliManager::test_in_terminal();
+            }
+            IDM_CLI_REVEAL => {
+                CliManager::reveal_in_explorer();
+            }
+            IDM_CLI_UNINSTALL => {
+                let _ = CliManager::uninstall();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("CLI 工具已从用户路径移除".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_OPEN_FILE => {
+                let path = WhitelistManager::get_config_path();
+                if !path.exists() {
+                    let dir = WhitelistManager::get_config_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(&path, "# Task Cleaner Configuration\n");
+                }
+                let _ = std::process::Command::new("notepad.exe")
+                    .arg(path.to_string_lossy().to_string())
+                    .spawn();
+            }
+            IDM_CFG_OPEN_DIR => {
+                let dir = WhitelistManager::get_config_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer.exe")
+                    .arg(dir.to_string_lossy().to_string())
+                    .spawn();
+            }
+            IDM_CFG_GITHUB => {
+                let _ = std::process::Command::new("cmd.exe")
+                    .args(["/c", "start", "https://github.com/macos-task-cleaner/windows-task-cleaner-gui"])
+                    .spawn();
             }
             IDM_CFG_ABOUT => {
                 let caption = to_wstring("Task Cleaner");
-                let msg = to_wstring("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n快捷键: Ctrl + Alt + K 呼出/隐藏\n\n轻量优雅的一体化前台任务管理与内存释放套件。");
-                windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                let msg = to_wstring("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n快捷键: Ctrl + Alt + K 呼出/隐藏\n\n轻量优雅的一体化前台任务管理、白名单保护与内存工作集深度释放套件。\n100% 独立原生 Rust 二进制，零外部重型依赖。");
+                MessageBoxW(
                     hwnd,
                     msg.as_ptr(),
                     caption.as_ptr(),
-                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+                    MB_OK | MB_ICONINFORMATION,
                 );
             }
             _ => {}
         }
     }
 
+    /// 弹出 24 语种动态切换菜单 (含跟随系统)
+    unsafe fn show_language_menu(hwnd: HWND) {
+        let (current_pref, lang) = {
+            let state = STATE.lock().unwrap();
+            let s = state.as_ref().unwrap();
+            (s.prefs.language_pref, s.active_language)
+        };
+
+        let menu: HMENU = CreatePopupMenu();
+        let auto_checked = current_pref == LanguagePreference::Auto;
+        let auto_flags = MF_STRING | if auto_checked { MF_CHECKED } else { 0 };
+        AppendMenuW(menu, auto_flags, IDM_LANG_AUTO, to_wstring(tr(I18nKey::LangAuto, lang)).as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+
+        for (idx, &l) in Language::ALL.iter().enumerate() {
+            let checked = current_pref == LanguagePreference::Specific(l);
+            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
+            let title = l.display_name();
+            AppendMenuW(menu, flags, IDM_LANG_BASE + idx, to_wstring(title).as_ptr());
+        }
+
+        let mut pt = POINT { x: 222, y: 444 };
+        ClientToScreen(hwnd, &mut pt);
+
+        SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
+        let cmd = TrackPopupMenuEx(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
+            pt.x,
+            pt.y,
+            hwnd,
+            std::ptr::null(),
+        );
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
+        DestroyMenu(menu);
+
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+            }
+        }
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+
+        if cmd == IDM_LANG_AUTO as u32 {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.prefs.language_pref = LanguagePreference::Auto;
+                state.active_language = detect_system_language();
+                state.prefs.save();
+            }
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+        } else if cmd >= IDM_LANG_BASE as u32 && cmd < (IDM_LANG_BASE + Language::ALL.len()) as u32 {
+            let target_lang = Language::ALL[(cmd - IDM_LANG_BASE as u32) as usize];
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.prefs.language_pref = LanguagePreference::Specific(target_lang);
+                state.active_language = target_lang;
+                state.prefs.save();
+            }
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+        }
+    }
 
     fn execute_clean_all(mode: TerminationMode) {
         let mut state_guard = STATE.lock().unwrap();
@@ -825,16 +1324,21 @@ mod win_gui {
             if state.targets.is_empty() {
                 return;
             }
-            let report = tiered_terminate(
-                &state.targets,
-                mode,
-                400,
-                &state.whitelist,
-            );
-            state.status_message = Some(format!(
-                "已结束 {} 个任务",
-                report.terminated_graceful + report.terminated_force
-            ));
+            let report = tiered_terminate(&state.targets, mode, 400, &state.whitelist);
+            let lang = state.active_language;
+            if mode == TerminationMode::PurgeWorkingSet {
+                state.status_message = Some(format!(
+                    "{} {} 个进程内存工作集",
+                    tr(I18nKey::ActionCleanPurge, lang),
+                    report.purged
+                ));
+            } else {
+                state.status_message = Some(format!(
+                    "已结束 {} 个任务",
+                    report.terminated_graceful + report.terminated_force
+                ));
+            }
+            state.status_timestamp = Some(Instant::now());
         }
     }
 
@@ -849,11 +1353,11 @@ mod win_gui {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
             IS_VISIBLE.store(true, Ordering::SeqCst);
-            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            InvalidateRect(hwnd, std::ptr::null(), 1);
         }
     }
 
-    /// 高精度 Windows 11 Fluent 2.0 拟真材质渲染管道 (100% 对齐 macOS 极简美学)
+    /// 高精度 Windows 11 Fluent 2.0 拟真材质渲染管道
     unsafe fn draw_ui(hwnd: HWND, hdc: HDC) {
         let mut client_rect: RECT = std::mem::zeroed();
         windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client_rect);
@@ -862,12 +1366,12 @@ mod win_gui {
         let mem_bmp = CreateCompatibleBitmap(hdc, client_rect.right, client_rect.bottom);
         let old_bmp = SelectObject(mem_dc, mem_bmp);
 
-        // 1. 底板画布: 极简纯净的银灰底板
+        // 1. 底板画布
         let bg_brush = CreateSolidBrush(COLOR_CANVAS_BG);
         FillRect(mem_dc, &client_rect, bg_brush);
         DeleteObject(bg_brush);
 
-        // 字体矩阵: 采用 Windows 11 Segoe UI Variable 家族与 ClearType
+        // 字体矩阵
         let font_title = create_font(15, FW_BOLD as i32);
         let font_card_title = create_font(13, FW_SEMIBOLD as i32);
         let font_body = create_font(12, FW_MEDIUM as i32);
@@ -880,6 +1384,7 @@ mod win_gui {
         if let Some(state) = state_guard.as_mut() {
             let hovered_btn = state.hovered_btn;
             let total_running = state.targets.len() + state.protected.len();
+            let lang = state.active_language;
 
             // ----------------------------------------------------
             // 2. 顶栏 (Header)
@@ -887,33 +1392,61 @@ mod win_gui {
             // 标题: Task Cleaner
             SelectObject(mem_dc, font_title);
             SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
-            let mut title_rect = RECT { left: 14, top: 12, right: 110, bottom: 36 };
+            let mut title_rect = RECT {
+                left: 14,
+                top: 12,
+                right: 110,
+                bottom: 36,
+            };
             let title_text = to_wstring("Task Cleaner");
             DrawTextW(mem_dc, title_text.as_ptr(), -1, &mut title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-            // 运行中胶囊徽章 (Pill Badge: [9 运行中])
-            let badge_rect = RECT { left: 112, top: 15, right: 182, bottom: 33 };
+            // 运行中胶囊徽章 (Pill Badge)
+            let badge_rect = RECT {
+                left: 112,
+                top: 15,
+                right: 190,
+                bottom: 33,
+            };
             draw_rounded_box(mem_dc, &badge_rect, 10, COLOR_BADGE_BG, None);
             SelectObject(mem_dc, font_badge);
             SetTextColor(mem_dc, COLOR_BADGE_TEXT);
             let mut b_text_rect = badge_rect;
-            let badge_text = to_wstring(&format!("{} 运行中", total_running));
+            let badge_unit = match lang {
+                Language::ZhHans => "运行中",
+                Language::ZhHant => "運行中",
+                Language::Ja => "実行中",
+                _ => "Running",
+            };
+            let badge_text = to_wstring(&format!("{} {}", total_running, badge_unit));
             DrawTextW(mem_dc, badge_text.as_ptr(), -1, &mut b_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            // 排序按钮 [↕]
-            let sort_rect = RECT { left: 236, top: 13, right: 258, bottom: 35 };
-            let is_sort_hover = hovered_btn == Some(HoverButton::SortMenu);
-            if is_sort_hover {
-                draw_rounded_box(mem_dc, &sort_rect, 6, COLOR_BTN_HOVER, None);
+            // 排序按钮 [↕] (受偏好开关控制)
+            if state.prefs.show_sort_button {
+                let sort_rect = RECT {
+                    left: 236,
+                    top: 13,
+                    right: 258,
+                    bottom: 35,
+                };
+                let is_sort_hover = hovered_btn == Some(HoverButton::SortMenu);
+                if is_sort_hover {
+                    draw_rounded_box(mem_dc, &sort_rect, 6, COLOR_BTN_HOVER, None);
+                }
+                SelectObject(mem_dc, font_body);
+                SetTextColor(mem_dc, if is_sort_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
+                let mut s_rect = sort_rect;
+                let sort_icon = to_wstring("↕");
+                DrawTextW(mem_dc, sort_icon.as_ptr(), -1, &mut s_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
-            SelectObject(mem_dc, font_body);
-            SetTextColor(mem_dc, if is_sort_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
-            let mut s_rect = sort_rect;
-            let sort_icon = to_wstring("↕");
-            DrawTextW(mem_dc, sort_icon.as_ptr(), -1, &mut s_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 刷新按钮 [↻]
-            let ref_rect = RECT { left: 262, top: 13, right: 284, bottom: 35 };
+            let ref_rect = RECT {
+                left: 262,
+                top: 13,
+                right: 284,
+                bottom: 35,
+            };
             let is_ref_hover = hovered_btn == Some(HoverButton::Refresh);
             if is_ref_hover {
                 draw_rounded_box(mem_dc, &ref_rect, 6, COLOR_BTN_HOVER, None);
@@ -925,7 +1458,12 @@ mod win_gui {
             DrawTextW(mem_dc, ref_icon.as_ptr(), -1, &mut r_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 最小化到托盘按钮 [×]
-            let close_rect = RECT { left: 288, top: 13, right: 308, bottom: 35 };
+            let close_rect = RECT {
+                left: 288,
+                top: 13,
+                right: 308,
+                bottom: 35,
+            };
             let is_close_hover = hovered_btn == Some(HoverButton::CloseToTray);
             if is_close_hover {
                 draw_rounded_box(mem_dc, &close_rect, 6, COLOR_BTN_HOVER, None);
@@ -937,9 +1475,14 @@ mod win_gui {
             DrawTextW(mem_dc, close_icon.as_ptr(), -1, &mut c_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // ----------------------------------------------------
-            // 3. 核心卡片 (Hero Action Card)
+            // 3. 核心操作卡片 (Hero Action Card)
             // ----------------------------------------------------
-            let card_rect = RECT { left: 12, top: 42, right: 308, bottom: 130 };
+            let card_rect = RECT {
+                left: 12,
+                top: 42,
+                right: 308,
+                bottom: 130,
+            };
             draw_rounded_box(mem_dc, &card_rect, 10, COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
 
             let has_targets = !state.targets.is_empty();
@@ -947,41 +1490,85 @@ mod win_gui {
             // 卡片标题与副标题
             SelectObject(mem_dc, font_card_title);
             SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
-            let mut card_title = RECT { left: 24, top: 50, right: 230, bottom: 70 };
+            let mut card_title = RECT {
+                left: 24,
+                top: 50,
+                right: 230,
+                bottom: 70,
+            };
             let title_str = if has_targets {
-                format!("{} 个待结束应用", state.targets.len())
+                let unit = match lang {
+                    Language::ZhHans => "个待结束应用",
+                    Language::ZhHant => "個待結束應用",
+                    Language::Ja => "件の終了対象",
+                    _ => "Processes to Clean",
+                };
+                format!("{} {}", state.targets.len(), unit)
             } else {
-                "全部应用已保护".to_string()
+                tr(I18nKey::EmptyTargetsTitle, lang).to_string()
             };
             let card_title_txt = to_wstring(&title_str);
             DrawTextW(mem_dc, card_title_txt.as_ptr(), -1, &mut card_title, DT_LEFT | DT_SINGLELINE);
 
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
-            let mut card_sub = RECT { left: 24, top: 70, right: 230, bottom: 86 };
+            let mut card_sub = RECT {
+                left: 24,
+                top: 70,
+                right: 230,
+                bottom: 86,
+            };
             let sub_str = if let Some(msg) = &state.status_message {
                 msg.clone()
             } else if has_targets {
-                "结束未受保护的前台应用".to_string()
+                match lang {
+                    Language::ZhHans => "结束未受保护的前台应用",
+                    Language::ZhHant => "結束未受保護的前台應用",
+                    Language::Ja => "保護されていないアプリを終了",
+                    _ => "Clean unprotected foreground applications",
+                }
+                .to_string()
             } else {
-                "当前前台无待清理的任务".to_string()
+                tr(I18nKey::EmptyTargetsSubtitle, lang).to_string()
             };
             let card_sub_txt = to_wstring(&sub_str);
             DrawTextW(mem_dc, card_sub_txt.as_ptr(), -1, &mut card_sub, DT_LEFT | DT_SINGLELINE);
 
             // 右上角状态胶囊标签 (待处理 / 已就绪)
-            let tag_rect = RECT { left: 248, top: 50, right: 296, bottom: 68 };
-            let tag_bg = if has_targets { COLOR_STATUS_PENDING_BG } else { COLOR_STATUS_READY_BG };
-            let tag_fg = if has_targets { COLOR_STATUS_PENDING_TEXT } else { COLOR_STATUS_READY_TEXT };
+            let tag_rect = RECT {
+                left: 242,
+                top: 50,
+                right: 298,
+                bottom: 68,
+            };
+            let tag_bg = if has_targets {
+                COLOR_STATUS_PENDING_BG
+            } else {
+                COLOR_STATUS_READY_BG
+            };
+            let tag_fg = if has_targets {
+                COLOR_STATUS_PENDING_TEXT
+            } else {
+                COLOR_STATUS_READY_TEXT
+            };
             draw_rounded_box(mem_dc, &tag_rect, 9, tag_bg, None);
             SelectObject(mem_dc, font_badge);
             SetTextColor(mem_dc, tag_fg);
             let mut tr_rect = tag_rect;
-            let tag_txt = to_wstring(if has_targets { "待处理" } else { "已就绪" });
+            let tag_txt = to_wstring(if has_targets {
+                tr(I18nKey::BadgePending, lang)
+            } else {
+                tr(I18nKey::BadgeProtected, lang)
+            });
             DrawTextW(mem_dc, tag_txt.as_ptr(), -1, &mut tr_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 核心操作按钮组: 结束大按钮 + 选项下拉箭头
-            let btn_main_rect = RECT { left: 22, top: 90, right: if has_targets { 268 } else { 298 }, bottom: 122 };
+            let btn_main_rect = RECT {
+                left: 22,
+                top: 90,
+                right: if has_targets { 268 } else { 298 },
+                bottom: 122,
+            };
             let is_main_hover = hovered_btn == Some(HoverButton::HeroMain);
             let main_btn_bg = if !has_targets {
                 COLOR_STATUS_PENDING_BG
@@ -995,14 +1582,31 @@ mod win_gui {
             SelectObject(mem_dc, font_body);
             SetTextColor(mem_dc, if has_targets { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
             let mut bm_text_rect = btn_main_rect;
-            let btn_text = to_wstring(if has_targets { "⊗ 结束" } else { "✓ 就绪" });
+            let btn_text = to_wstring(&format!(
+                "{} {}",
+                if has_targets { "[-]" } else { "[OK]" },
+                if has_targets {
+                    tr(I18nKey::BtnTerminate, lang)
+                } else {
+                    tr(I18nKey::StatusReady, lang)
+                }
+            ));
             DrawTextW(mem_dc, btn_text.as_ptr(), -1, &mut bm_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 下拉小箭头 (仅当有待结束任务时显示)
             if has_targets {
-                let btn_chev_rect = RECT { left: 272, top: 90, right: 298, bottom: 122 };
+                let btn_chev_rect = RECT {
+                    left: 272,
+                    top: 90,
+                    right: 298,
+                    bottom: 122,
+                };
                 let is_chev_hover = hovered_btn == Some(HoverButton::HeroChevron);
-                let chev_bg = if is_chev_hover { COLOR_HERO_BTN_HOVER } else { COLOR_HERO_BTN };
+                let chev_bg = if is_chev_hover {
+                    COLOR_HERO_BTN_HOVER
+                } else {
+                    COLOR_HERO_BTN
+                };
                 draw_rounded_box(mem_dc, &btn_chev_rect, 6, chev_bg, None);
                 SelectObject(mem_dc, font_sub);
                 SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
@@ -1014,13 +1618,18 @@ mod win_gui {
             // ----------------------------------------------------
             // 4. 分段选择器 (Segmented Tab Bar)
             // ----------------------------------------------------
-            let tab_container = RECT { left: 12, top: 138, right: 308, bottom: 166 };
+            let tab_container = RECT {
+                left: 12,
+                top: 138,
+                right: 308,
+                bottom: 166,
+            };
             draw_rounded_box(mem_dc, &tab_container, 8, COLOR_TAB_BG, None);
 
             let tab_items = [
-                ("待结束", state.targets.len()),
-                ("已保护", state.protected.len()),
-                ("全部活动", total_running),
+                (tr(I18nKey::TabTargets, lang), state.targets.len()),
+                (tr(I18nKey::TabProtected, lang), state.protected.len()),
+                (tr(I18nKey::TabAll, lang), total_running),
             ];
 
             let tab_w = (296 - 4) / 3;
@@ -1041,7 +1650,6 @@ mod win_gui {
                     draw_rounded_box(mem_dc, &tab_rect, 6, COLOR_BTN_HOVER, None);
                 }
 
-                // 绘制 Tab 标题文本
                 SelectObject(mem_dc, font_sub);
                 SetTextColor(mem_dc, if is_active { rgb(255, 255, 255) } else { COLOR_TAB_INACTIVE_TEXT });
                 let mut t_text_rect = RECT {
@@ -1053,7 +1661,6 @@ mod win_gui {
                 let tw = to_wstring(tab_title);
                 DrawTextW(mem_dc, tw.as_ptr(), -1, &mut t_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-                // 绘制 Tab 数量小胶囊徽章
                 let badge_pill = RECT {
                     left: tab_rect.right - 22,
                     top: tab_rect.top + 4,
@@ -1061,7 +1668,7 @@ mod win_gui {
                     bottom: tab_rect.bottom - 4,
                 };
                 let pill_bg = if is_active {
-                    rgb(30, 144, 255) // 高亮白色半透感淡蓝
+                    rgb(30, 144, 255)
                 } else {
                     COLOR_TAB_BADGE_INACTIVE
                 };
@@ -1076,43 +1683,77 @@ mod win_gui {
             // ----------------------------------------------------
             // 5. 应用列表区 (List Container Card)
             // ----------------------------------------------------
-            let list_container = RECT { left: 12, top: 174, right: 308, bottom: 434 };
+            let list_container = RECT {
+                left: 12,
+                top: 174,
+                right: 308,
+                bottom: 434,
+            };
             draw_rounded_box(mem_dc, &list_container, 10, COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
 
             let items: Vec<(&AppTarget, bool)> = match state.active_tab {
                 1 => state.protected.iter().map(|(a, _)| (a, true)).collect(),
-                2 => state.targets.iter().map(|a| (a, false)).chain(state.protected.iter().map(|(a, _)| (a, true))).collect(),
+                2 => state
+                    .targets
+                    .iter()
+                    .map(|a| (a, false))
+                    .chain(state.protected.iter().map(|(a, _)| (a, true)))
+                    .collect(),
                 _ => state.targets.iter().map(|a| (a, false)).collect(),
             };
 
             if items.is_empty() {
-                // 空状态优雅占位展示
                 SelectObject(mem_dc, font_title);
                 SetTextColor(mem_dc, COLOR_ACCENT_BLUE);
-                let mut check_rect = RECT { left: 12, top: 220, right: 308, bottom: 250 };
-                let check_txt = to_wstring("✓");
+                let mut check_rect = RECT {
+                    left: 12,
+                    top: 220,
+                    right: 308,
+                    bottom: 250,
+                };
+                let check_txt = to_wstring("[OK]");
                 DrawTextW(mem_dc, check_txt.as_ptr(), -1, &mut check_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
                 SelectObject(mem_dc, font_card_title);
                 SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
-                let mut empty_title = RECT { left: 12, top: 255, right: 308, bottom: 275 };
-                let empty_title_txt = to_wstring("无需清理");
+                let mut empty_title = RECT {
+                    left: 12,
+                    top: 255,
+                    right: 308,
+                    bottom: 275,
+                };
+                let empty_title_txt = to_wstring(tr(I18nKey::EmptyTargetsTitle, lang));
                 DrawTextW(mem_dc, empty_title_txt.as_ptr(), -1, &mut empty_title, DT_CENTER | DT_SINGLELINE);
 
                 SelectObject(mem_dc, font_sub);
                 SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
-                let mut empty_sub = RECT { left: 12, top: 278, right: 308, bottom: 295 };
-                let empty_sub_txt = to_wstring("所有前台应用均受规则保护");
+                let mut empty_sub = RECT {
+                    left: 12,
+                    top: 278,
+                    right: 308,
+                    bottom: 295,
+                };
+                let empty_sub_txt = to_wstring(tr(I18nKey::EmptyTargetsSubtitle, lang));
                 DrawTextW(mem_dc, empty_sub_txt.as_ptr(), -1, &mut empty_sub, DT_CENTER | DT_SINGLELINE);
 
-                // 查看全部活动胶囊按钮
-                let view_all_rect = RECT { left: 100, top: 310, right: 220, bottom: 334 };
+                let view_all_rect = RECT {
+                    left: 80,
+                    top: 310,
+                    right: 240,
+                    bottom: 334,
+                };
                 let is_va_hover = hovered_btn == Some(HoverButton::ViewAllFromEmpty);
-                draw_rounded_box(mem_dc, &view_all_rect, 12, if is_va_hover { COLOR_HERO_BTN_HOVER } else { COLOR_HERO_BTN }, None);
+                draw_rounded_box(
+                    mem_dc,
+                    &view_all_rect,
+                    12,
+                    if is_va_hover { COLOR_HERO_BTN_HOVER } else { COLOR_HERO_BTN },
+                    None,
+                );
                 SelectObject(mem_dc, font_sub);
                 SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
                 let mut va_text_rect = view_all_rect;
-                let va_txt = to_wstring(&format!("查看全部活动 ({})", total_running));
+                let va_txt = to_wstring(&format!("{} ({})", tr(I18nKey::BtnViewAll, lang), total_running));
                 DrawTextW(mem_dc, va_txt.as_ptr(), -1, &mut va_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             } else {
                 let scroll = state.scroll_offset;
@@ -1142,34 +1783,72 @@ mod win_gui {
                     if let Some(h_icon) = icon_opt {
                         DrawIconEx(mem_dc, 22, y + 8, h_icon, 24, 24, 0, 0 as HBRUSH, DI_NORMAL);
                     } else {
-                        let def_rect = RECT { left: 22, top: y + 8, right: 46, bottom: y + 32 };
+                        let def_rect = RECT {
+                            left: 22,
+                            top: y + 8,
+                            right: 46,
+                            bottom: y + 32,
+                        };
                         draw_rounded_box(mem_dc, &def_rect, 5, COLOR_STATUS_PENDING_BG, None);
                     }
 
-                    // 2. 应用主名称 (解析后的友好名称)
+                    // 2. 应用友好主名称
                     SelectObject(mem_dc, font_body);
                     SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
-                    let mut name_rect = RECT { left: 52, top: y + 4, right: 248, bottom: y + 22 };
+                    let mut name_rect = RECT {
+                        left: 52,
+                        top: y + 4,
+                        right: 248,
+                        bottom: y + 22,
+                    };
                     let friendly_name = resolve_friendly_name(app);
                     let name_txt = to_wstring(&friendly_name);
                     DrawTextW(mem_dc, name_txt.as_ptr(), -1, &mut name_rect, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-                    // 3. 进程详细指标 (chrome.exe · 154 MB · 2 窗口)
+                    // 3. 详细遥测指标
                     SelectObject(mem_dc, font_sub);
                     SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
-                    let mut sub_rect = RECT { left: 52, top: y + 22, right: 248, bottom: y + 38 };
-                    let sub_txt = to_wstring(&format!(
-                        "{} · {:.0} MB · {} 窗口",
-                        app.name,
-                        app.memory_mb(),
-                        app.window_count
-                    ));
+                    let mut sub_rect = RECT {
+                        left: 52,
+                        top: y + 22,
+                        right: 248,
+                        bottom: y + 38,
+                    };
+
+                    let win_unit = tr(I18nKey::UnitWindows, lang);
+                    let sub_str = if state.prefs.show_detailed_metrics && state.prefs.show_app_identifier {
+                        format!(
+                            "{} · {:.0} MB · {:.1}% · {} {}",
+                            app.name,
+                            app.memory_mb(),
+                            app.cpu_percent,
+                            app.window_count,
+                            win_unit
+                        )
+                    } else if state.prefs.show_detailed_metrics {
+                        format!(
+                            "{:.0} MB · {:.1}% · {} {}",
+                            app.memory_mb(),
+                            app.cpu_percent,
+                            app.window_count,
+                            win_unit
+                        )
+                    } else if state.prefs.show_app_identifier {
+                        format!("PID: {} · {}", app.pid, app.name)
+                    } else {
+                        format!("PID: {}", app.pid)
+                    };
+                    let sub_txt = to_wstring(&sub_str);
                     DrawTextW(mem_dc, sub_txt.as_ptr(), -1, &mut sub_rect, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
 
                     // 4. 右侧操作按钮组
                     if !is_protected {
-                        // 结束按钮 (垃圾桶小图标)
-                        let trash_rect = RECT { left: 256, top: y + 10, right: 278, bottom: y + 32 };
+                        let trash_rect = RECT {
+                            left: 256,
+                            top: y + 10,
+                            right: 278,
+                            bottom: y + 32,
+                        };
                         let is_trash_hover = hovered_btn == Some(HoverButton::RowTrash(i));
                         if is_trash_hover {
                             draw_rounded_box(mem_dc, &trash_rect, 4, COLOR_BTN_HOVER, None);
@@ -1182,7 +1861,12 @@ mod win_gui {
                     }
 
                     // 拓展操作按钮 (竖三点 ⋮)
-                    let more_rect = RECT { left: 282, top: y + 10, right: 304, bottom: y + 32 };
+                    let more_rect = RECT {
+                        left: 282,
+                        top: y + 10,
+                        right: 304,
+                        bottom: y + 32,
+                    };
                     let is_more_hover = hovered_btn == Some(HoverButton::RowMore(i));
                     if is_more_hover {
                         draw_rounded_box(mem_dc, &more_rect, 4, COLOR_BTN_HOVER, None);
@@ -1195,19 +1879,25 @@ mod win_gui {
 
                     // 行分割线
                     if i < VISIBLE_ROWS - 1 && actual_idx < items.len() - 1 {
-                        let sep_rect = RECT { left: 52, top: y + ROW_HEIGHT - 1, right: 300, bottom: y + ROW_HEIGHT };
+                        let sep_rect = RECT {
+                            left: 52,
+                            top: y + ROW_HEIGHT - 1,
+                            right: 300,
+                            bottom: y + ROW_HEIGHT,
+                        };
                         let s_brush = CreateSolidBrush(COLOR_ROW_SEP);
                         FillRect(mem_dc, &sep_rect, s_brush);
                         DeleteObject(s_brush);
                     }
                 }
 
-                // 滚动条指示器 (当条目超过 6 项时展示)
+                // 滚动条指示器
                 if items.len() > VISIBLE_ROWS {
                     let total = items.len() as f32;
                     let track_h = 240.0;
                     let thumb_h = (VISIBLE_ROWS as f32 / total * track_h).max(20.0);
-                    let thumb_y = 180.0 + (scroll as f32 / (total - VISIBLE_ROWS as f32) * (track_h - thumb_h));
+                    let thumb_y = 180.0
+                        + (scroll as f32 / (total - VISIBLE_ROWS as f32) * (track_h - thumb_h));
                     let thumb_rect = RECT {
                         left: 304,
                         top: thumb_y as i32,
@@ -1221,13 +1911,23 @@ mod win_gui {
             // ----------------------------------------------------
             // 6. 底栏 (Footer Toolbar)
             // ----------------------------------------------------
-            let sep_line = RECT { left: 12, top: 442, right: 308, bottom: 443 };
+            let sep_line = RECT {
+                left: 12,
+                top: 442,
+                right: 308,
+                bottom: 443,
+            };
             let foot_brush = CreateSolidBrush(COLOR_CARD_BORDER);
             FillRect(mem_dc, &sep_line, foot_brush);
             DeleteObject(foot_brush);
 
             // 配置项按钮 (左侧)
-            let cfg_rect = RECT { left: 14, top: 448, right: 86, bottom: 472 };
+            let cfg_rect = RECT {
+                left: 14,
+                top: 448,
+                right: 90,
+                bottom: 472,
+            };
             let is_cfg_hover = hovered_btn == Some(HoverButton::Settings);
             if is_cfg_hover {
                 draw_rounded_box(mem_dc, &cfg_rect, 4, COLOR_BTN_HOVER, None);
@@ -1235,11 +1935,33 @@ mod win_gui {
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, if is_cfg_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
             let mut cr = cfg_rect;
-            let cfg_txt = to_wstring("配置项");
+            let cfg_txt = to_wstring(tr(I18nKey::BtnSettings, lang));
             DrawTextW(mem_dc, cfg_txt.as_ptr(), -1, &mut cr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
+            // 语言切换按钮 (中间偏右 [文/A])
+            let lang_rect = RECT {
+                left: 196,
+                top: 448,
+                right: 248,
+                bottom: 472,
+            };
+            let is_lang_hover = hovered_btn == Some(HoverButton::Language);
+            if is_lang_hover {
+                draw_rounded_box(mem_dc, &lang_rect, 4, COLOR_BTN_HOVER, None);
+            }
+            SelectObject(mem_dc, font_sub);
+            SetTextColor(mem_dc, if is_lang_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
+            let mut lr = lang_rect;
+            let lang_txt = to_wstring("[文/A]");
+            DrawTextW(mem_dc, lang_txt.as_ptr(), -1, &mut lr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
             // 退出按钮 (右侧)
-            let quit_rect = RECT { left: 254, top: 448, right: 306, bottom: 472 };
+            let quit_rect = RECT {
+                left: 254,
+                top: 448,
+                right: 306,
+                bottom: 472,
+            };
             let is_q_hover = hovered_btn == Some(HoverButton::Quit);
             if is_q_hover {
                 draw_rounded_box(mem_dc, &quit_rect, 4, COLOR_BTN_HOVER, None);
@@ -1247,7 +1969,7 @@ mod win_gui {
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, if is_q_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
             let mut qr = quit_rect;
-            let q_txt = to_wstring("退出");
+            let q_txt = to_wstring(tr(I18nKey::BtnQuit, lang));
             DrawTextW(mem_dc, q_txt.as_ptr(), -1, &mut qr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
@@ -1264,7 +1986,12 @@ mod win_gui {
         DeleteObject(font_badge);
     }
 
-    unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn window_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         match msg {
             WM_TRAYICON => {
                 let event = (lparam & 0xFFFF) as u32;
@@ -1276,6 +2003,17 @@ mod win_gui {
                         show_tray_context_menu(hwnd);
                     }
                     _ => {}
+                }
+                0
+            }
+            WM_TIMER => {
+                if wparam == TIMER_HEARTBEAT_ID as usize {
+                    let is_vis = IS_VISIBLE.load(Ordering::Relaxed);
+                    let is_menu = IS_MENU_ACTIVE.load(Ordering::Relaxed);
+                    if is_vis && !is_menu {
+                        refresh_scan_silent();
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
+                    }
                 }
                 0
             }
@@ -1308,8 +2046,15 @@ mod win_gui {
                 let mut new_btn = None;
                 let mut new_row = None;
 
-                // 顶栏按钮 (排序 / 刷新 / 最小化到托盘)
-                if x >= 236 && x <= 258 && y >= 13 && y <= 35 {
+                let show_sort = STATE
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|s| s.prefs.show_sort_button)
+                    .unwrap_or(true);
+
+                // 顶栏按钮
+                if show_sort && x >= 236 && x <= 258 && y >= 13 && y <= 35 {
                     new_btn = Some(HoverButton::SortMenu);
                 } else if x >= 262 && x <= 284 && y >= 13 && y <= 35 {
                     new_btn = Some(HoverButton::Refresh);
@@ -1346,13 +2091,15 @@ mod win_gui {
                     }
                 }
                 // 空状态查看全部按钮
-                else if x >= 100 && x <= 220 && y >= 310 && y <= 334 {
+                else if x >= 80 && x <= 240 && y >= 310 && y <= 334 {
                     new_btn = Some(HoverButton::ViewAllFromEmpty);
                 }
                 // 底栏按钮
                 else if y >= 448 && y <= 472 {
-                    if x >= 14 && x <= 86 {
+                    if x >= 14 && x <= 90 {
                         new_btn = Some(HoverButton::Settings);
+                    } else if x >= 196 && x <= 248 {
+                        new_btn = Some(HoverButton::Language);
                     } else if x >= 254 && x <= 306 {
                         new_btn = Some(HoverButton::Quit);
                     }
@@ -1364,7 +2111,7 @@ mod win_gui {
                         state.hovered_btn = new_btn;
                         state.hovered_row = new_row;
                         drop(state_guard);
-                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
                     }
                 }
                 0
@@ -1376,7 +2123,7 @@ mod win_gui {
                         state.hovered_btn = None;
                         state.hovered_row = None;
                         drop(state_guard);
-                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+                        InvalidateRect(hwnd, std::ptr::null(), 0);
                     }
                 }
                 0
@@ -1397,7 +2144,7 @@ mod win_gui {
                         state.scroll_offset = (state.scroll_offset + 1).min(max_offset);
                     }
                     drop(state_guard);
-                    windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
                 0
             }
@@ -1420,14 +2167,21 @@ mod win_gui {
                 let x = (lparam & 0xFFFF) as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
 
+                let show_sort = STATE
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|s| s.prefs.show_sort_button)
+                    .unwrap_or(true);
+
                 // 1. 顶栏操作
-                if x >= 236 && x <= 258 && y >= 13 && y <= 35 {
+                if show_sort && x >= 236 && x <= 258 && y >= 13 && y <= 35 {
                     show_sort_menu(hwnd);
                     return 0;
                 }
                 if x >= 262 && x <= 284 && y >= 13 && y <= 35 {
                     refresh_scan();
-                    windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
                     return 0;
                 }
                 if x >= 288 && x <= 308 && y >= 13 && y <= 35 {
@@ -1441,7 +2195,7 @@ mod win_gui {
                     if x >= 22 && x <= 268 {
                         execute_clean_all(TerminationMode::Standard);
                         refresh_scan();
-                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                        InvalidateRect(hwnd, std::ptr::null(), 1);
                         return 0;
                     } else if x >= 272 && x <= 298 {
                         show_action_chevron_menu(hwnd);
@@ -1459,19 +2213,19 @@ mod win_gui {
                                 state.active_tab = idx;
                                 state.scroll_offset = 0;
                             }
-                            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                            InvalidateRect(hwnd, std::ptr::null(), 1);
                             return 0;
                         }
                     }
                 }
 
                 // 4. 空状态“查看全部活动”按钮
-                if x >= 100 && x <= 220 && y >= 310 && y <= 334 {
+                if x >= 80 && x <= 240 && y >= 310 && y <= 334 {
                     if let Some(state) = STATE.lock().unwrap().as_mut() {
                         state.active_tab = 2;
                         state.scroll_offset = 0;
                     }
-                    windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
                     return 0;
                 }
 
@@ -1503,7 +2257,7 @@ mod win_gui {
                         if let Some(target) = target_to_kill {
                             tiered_terminate(&[target], TerminationMode::Standard, 400, &WhitelistManager::new());
                             refresh_scan();
-                            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                            InvalidateRect(hwnd, std::ptr::null(), 1);
                             return 0;
                         }
                     }
@@ -1517,8 +2271,11 @@ mod win_gui {
 
                 // 6. 底栏操作
                 if y >= 448 && y <= 472 {
-                    if x >= 14 && x <= 86 {
+                    if x >= 14 && x <= 90 {
                         show_settings_menu(hwnd);
+                        return 0;
+                    } else if x >= 196 && x <= 248 {
+                        show_language_menu(hwnd);
                         return 0;
                     } else if x >= 254 && x <= 306 {
                         PostQuitMessage(0);
@@ -1537,6 +2294,7 @@ mod win_gui {
             }
             WM_ERASEBKGND => 1,
             WM_DESTROY => {
+                KillTimer(hwnd, TIMER_HEARTBEAT_ID);
                 PostQuitMessage(0);
                 0
             }
@@ -1550,7 +2308,7 @@ mod win_gui {
 
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_DROPSHADOW, // 开启 Windows 11 原生悬浮投影
+            style: CS_DROPSHADOW,
             lpfnWndProc: Some(window_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
@@ -1600,6 +2358,11 @@ mod win_gui {
             );
         }
 
+        // 启用 2 秒心跳后台监控定时器 (失焦静默刷新)
+        unsafe {
+            SetTimer(hwnd, TIMER_HEARTBEAT_ID, 2000, None);
+        }
+
         // 初始化托盘图标
         let h_icon = unsafe { create_default_tray_icon() };
         let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
@@ -1618,32 +2381,37 @@ mod win_gui {
             Shell_NotifyIconW(NIM_ADD, &nid);
         }
 
+        let prefs = GuiPreferences::load();
+        let active_lang = prefs.language_pref.resolved_language();
+
         {
             let mut state = STATE.lock().unwrap();
             *state = Some(GuiState {
                 whitelist: WhitelistManager::new(),
                 targets: Vec::new(),
                 protected: Vec::new(),
-                sort_mode: SortMode::Composite,
+                prefs,
+                active_language: active_lang,
                 active_tab: 0,
                 scroll_offset: 0,
                 hovered_row: None,
                 hovered_btn: None,
                 icon_cache: HashMap::new(),
                 status_message: None,
+                status_timestamp: None,
                 last_scan: Instant::now(),
             });
         }
 
         refresh_scan();
 
-        // 启动时直接在屏幕右下角打开并前置展示 Fluent 2.0 主面板！
+        // 启动时在屏幕右下角打开并前置展示主面板
         unsafe {
             position_window(hwnd);
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
             IS_VISIBLE.store(true, Ordering::SeqCst);
-            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            InvalidateRect(hwnd, std::ptr::null(), 1);
         }
 
         let mut msg: MSG = unsafe { std::mem::zeroed() };

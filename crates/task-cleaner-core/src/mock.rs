@@ -50,7 +50,13 @@ pub fn get_caller_lineage() -> HashSet<u32> {
     s
 }
 
+pub fn purge_process_working_set(_pid: u32) -> bool {
+    true
+}
+
+
 pub fn tiered_terminate(
+
     targets: &[AppTarget],
     _mode: TerminationMode,
     _grace_period_ms: u64,
@@ -60,11 +66,13 @@ pub fn tiered_terminate(
         total_targets: targets.len(),
         terminated_graceful: targets.len(),
         terminated_force: 0,
+        purged: 0,
         failed: 0,
         duration_ms: 50.0,
         records: vec![],
     }
 }
+
 
 pub fn calculate_composite_score(memory_mb: f64, cpu_percent: f64, window_count: usize) -> f64 {
     (memory_mb / 100.0) * 0.4 + (cpu_percent * 2.0) * 0.4 + (window_count as f64 * 5.0) * 0.2

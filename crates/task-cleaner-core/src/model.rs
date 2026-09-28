@@ -93,6 +93,8 @@ pub enum TerminationMode {
     Standard,
     /// 强制直接终止: 立即 TerminateProcess (对 explorer.exe 仍予以特殊保护)
     ForceImmediate,
+    /// 深度释放: 压缩工作集内存 (K32EmptyWorkingSet)
+    PurgeWorkingSet,
 }
 
 /// 进程终止状态强类型枚举
@@ -104,6 +106,8 @@ pub enum TerminationStatusCode {
     SuccessGraceful,
     /// TerminateProcess 强制终止成功
     SuccessForceTerminate,
+    /// K32EmptyWorkingSet 内存工作集深度释放成功
+    SuccessPurgeWorkingSet,
     /// 调用者祖先会话链路保护，安全跳过
     SkippedCallerLineage,
     /// 系统底层核心守护进程保护 (如 explorer.exe / dwm.exe)，安全跳过
@@ -135,7 +139,10 @@ pub struct TerminationReport {
     pub total_targets: usize,
     pub terminated_graceful: usize,
     pub terminated_force: usize,
+    #[serde(default)]
+    pub purged: usize,
     pub failed: usize,
     pub duration_ms: f64,
     pub records: Vec<ProcessTerminationRecord>,
 }
+

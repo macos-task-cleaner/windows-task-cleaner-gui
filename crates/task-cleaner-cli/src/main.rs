@@ -14,6 +14,7 @@ struct CliArgs {
     dry_run: bool,
     execute: bool,
     force: bool,
+    purge: bool,
     json: bool,
     cli_keeps: Vec<String>,
     add_whitelist: Vec<String>,
@@ -59,6 +60,11 @@ fn parse_cli_args() -> CliArgs {
             }
             "-f" | "--force" => {
                 cli.force = true;
+                cli.execute = true;
+                cli.dry_run = false;
+            }
+            "-p" | "--purge" => {
+                cli.purge = true;
                 cli.execute = true;
                 cli.dry_run = false;
             }
@@ -118,6 +124,7 @@ fn print_help() {
     -n, --dry-run               [默认] 仅预检扫描并打印待清理目标，不执行退出
     -e, --execute, --clean      正式执行未受保护前台应用的退出清理
     -f, --force                 强制直接终止 (立即 TerminateProcess，资源管理器除外)
+    -p, --purge                 深度释放物理常驻内存工作集 (K32EmptyWorkingSet，不终止进程)
     -s, --sort <模式>           设置结果排序模式: composite(综合), memory(内存), cpu, windows, default
     -k, --keep <进程名>         本次运行临时将指定应用列入保护
     -a, --add-whitelist <进程名> 将指定进程名永久追加至用户白名单 (~/.config/taskcleaner/config.toml)
@@ -294,7 +301,9 @@ fn main() {
         );
         println!("================================================================================");
 
-        let mode = if args.force {
+        let mode = if args.purge {
+            TerminationMode::PurgeWorkingSet
+        } else if args.force {
             TerminationMode::ForceImmediate
         } else {
             TerminationMode::Standard
@@ -302,14 +311,23 @@ fn main() {
 
         let report: TerminationReport = tiered_terminate(&target_list, mode, 400, &whitelist);
 
-        println!(
-            "清理结果: 成功退出 {} 个 (优雅退出: {}, 强制终止: {}), 失败 {} 个, 耗时 {:.1} ms",
-            report.terminated_graceful + report.terminated_force,
-            report.terminated_graceful,
-            report.terminated_force,
-            report.failed,
-            report.duration_ms
-        );
+        if args.purge {
+            println!(
+                "内存释放结果: 成功释放 {} 个进程工作集, 失败 {} 个, 耗时 {:.1} ms",
+                report.purged,
+                report.failed,
+                report.duration_ms
+            );
+        } else {
+            println!(
+                "清理结果: 成功退出 {} 个 (优雅退出: {}, 强制终止: {}), 失败 {} 个, 耗时 {:.1} ms",
+                report.terminated_graceful + report.terminated_force,
+                report.terminated_graceful,
+                report.terminated_force,
+                report.failed,
+                report.duration_ms
+            );
+        }
 
         println!("{}", "-".repeat(80));
         for rec in &report.records {

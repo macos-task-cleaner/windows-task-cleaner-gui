@@ -10,9 +10,10 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
+use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcessId, GetExitCodeProcess, OpenProcess, TerminateProcess, WaitForSingleObject,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
@@ -103,6 +104,27 @@ pub fn is_explorer(identifier: &str) -> bool {
     let clean = identifier.trim().to_lowercase();
     clean == "explorer.exe" || clean == "explorer"
 }
+
+/// 深度压缩指定 PID 进程的物理内存工作集 (调用 K32EmptyWorkingSet 释放未用物理页面)
+pub fn purge_process_working_set(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let handle: HANDLE = unsafe {
+        OpenProcess(
+            PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        return false;
+    }
+    let ok = unsafe { K32EmptyWorkingSet(handle) };
+    unsafe { CloseHandle(handle) };
+    ok != 0
+}
+
 
 struct EnumCloseContext {
     target_pid: u32,
@@ -213,7 +235,30 @@ pub fn tiered_terminate(
                     });
                 }
             }
+            TerminationMode::PurgeWorkingSet => {
+                let success = purge_process_working_set(target.pid);
+                if success {
+                    report.purged += 1;
+                    report.records.push(ProcessTerminationRecord {
+                        app: target.clone(),
+                        status: localize_status_code(TerminationStatusCode::SuccessPurgeWorkingSet, lang).to_string(),
+                        status_code: TerminationStatusCode::SuccessPurgeWorkingSet,
+                        exit_signal: Some("K32EmptyWorkingSet".to_string()),
+                        error_msg: None,
+                    });
+                } else {
+                    report.failed += 1;
+                    report.records.push(ProcessTerminationRecord {
+                        app: target.clone(),
+                        status: localize_status_code(TerminationStatusCode::FailedPermissionDenied, lang).to_string(),
+                        status_code: TerminationStatusCode::FailedPermissionDenied,
+                        exit_signal: None,
+                        error_msg: Some("工作集内存压缩失败 (可能权限不足)".to_string()),
+                    });
+                }
+            }
             TerminationMode::Standard => {
+
                 // 第一阶段：向该应用所有顶层窗口投递 WM_CLOSE 消息 (优雅退出)
                 let mut close_ctx = EnumCloseContext {
                     target_pid: target.pid,

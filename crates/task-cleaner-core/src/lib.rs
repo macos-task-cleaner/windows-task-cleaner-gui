@@ -16,19 +16,24 @@ pub use whitelist::{
     GeneralConfig, TaskCleanerConfig, WhitelistManager, WhitelistMatch, WhitelistSection,
     WhitelistTier,
 };
-pub use i18n::{localize_status_code, Language};
+pub use i18n::{
+    detect_system_language, localize_status_code, tr, I18nKey, Language, LanguagePreference,
+};
 
 #[cfg(windows)]
 pub use windows::{
     calculate_composite_score, get_caller_lineage, get_process_memory_bytes, is_explorer,
-    is_process_alive, scan_foreground_apps, sort_targets, tiered_terminate,
+    is_process_alive, purge_process_working_set, scan_foreground_apps, sort_targets,
+    tiered_terminate,
 };
 
 #[cfg(not(windows))]
 pub use mock::{
     calculate_composite_score, get_caller_lineage, get_process_memory_bytes, is_explorer,
-    is_process_alive, scan_foreground_apps, sort_targets, tiered_terminate,
+    is_process_alive, purge_process_working_set, scan_foreground_apps, sort_targets,
+    tiered_terminate,
 };
+
 
 #[cfg(test)]
 mod tests {
