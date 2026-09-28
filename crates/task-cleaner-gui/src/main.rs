@@ -27,14 +27,25 @@ mod win_gui {
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, ClientToScreen, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
         CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-        GetDC, GetStockObject, ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor,
+        GetDC, GetMonitorInfoW, GetStockObject, MonitorFromPoint, ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor,
         BLACK_BRUSH, CLEARTYPE_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
         DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC,
-        HFONT, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
+        HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
+    };
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+        HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WRITE, REG_SZ,
+    };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+        RegisterHotKey, TrackMouseEvent, UnregisterHotKey, MOD_ALT, MOD_CONTROL, TME_LEAVE,
+        TRACKMOUSEEVENT,
     };
     use windows_sys::Win32::UI::Shell::{
         ExtractIconExW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
@@ -48,13 +59,14 @@ mod win_gui {
         ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW,
         DI_NORMAL, HICON, HMENU, HWND_TOPMOST, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA,
         SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
-        TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP,
-        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_USER, WNDCLASSEXW,
+        TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY,
+        WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_USER, WNDCLASSEXW,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
     const WM_MOUSELEAVE: u32 = 0x02A3;
+    const HOTKEY_TOGGLE_ID: i32 = 0x1001;
 
     // 菜单 ID 定义
     const IDM_OPEN: usize = 1001;
@@ -123,6 +135,7 @@ mod win_gui {
     const COLOR_TAB_BADGE_INACTIVE: COLORREF = rgb(210, 214, 220);
 
     static IS_VISIBLE: AtomicBool = AtomicBool::new(false);
+    static IS_MENU_ACTIVE: AtomicBool = AtomicBool::new(false);
 
     struct GuiState {
         whitelist: WhitelistManager,
@@ -343,15 +356,22 @@ mod win_gui {
         }
     }
 
-    /// 自动将窗口精确吸附在屏幕右下角任务栏正上方 (支持任意分辨率和任务栏位置)
+    /// 自动将窗口精确吸附在屏幕右下角任务栏正上方 (支持多显示器、任意分辨率与任务栏位置)
     unsafe fn position_window(hwnd: HWND) {
-        let mut work_area: RECT = std::mem::zeroed();
-        SystemParametersInfoW(
-            SPI_GETWORKAREA,
-            0,
-            &mut work_area as *mut _ as *mut _,
-            0,
-        );
+        let mut cursor: POINT = std::mem::zeroed();
+        GetCursorPos(&mut cursor);
+
+        let hmon = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+
+        let work_area = if GetMonitorInfoW(hmon, &mut mi) != 0 {
+            mi.rcWork
+        } else {
+            let mut wa: RECT = std::mem::zeroed();
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as *mut _, 0);
+            wa
+        };
 
         let screen_w = work_area.right - work_area.left;
         let screen_h = work_area.bottom - work_area.top;
@@ -379,6 +399,90 @@ mod win_gui {
         );
     }
 
+    /// 原生 Win32 零延迟剪贴板复制 (替代开销巨大的 powershell 子进程)
+    unsafe fn copy_to_clipboard(hwnd: HWND, text: &str) -> bool {
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let bytes = wide.len() * std::mem::size_of::<u16>();
+
+        let hmem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if hmem.is_null() {
+            return false;
+        }
+        let ptr = GlobalLock(hmem);
+        if ptr.is_null() {
+            GlobalUnlock(hmem);
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes);
+        GlobalUnlock(hmem);
+
+        if OpenClipboard(hwnd) == 0 {
+            return false;
+        }
+        EmptyClipboard();
+        SetClipboardData(13 /* CF_UNICODETEXT */, hmem as _);
+        CloseClipboard();
+        true
+    }
+
+    const REG_RUN_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const APP_REG_NAME: &str = "TaskCleaner";
+
+    unsafe fn is_autostart_enabled() -> bool {
+        let subkey = to_wstring(REG_RUN_SUBKEY);
+        let val_name = to_wstring(APP_REG_NAME);
+        let mut hkey = std::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_QUERY_VALUE, &mut hkey) != 0 {
+            return false;
+        }
+        let mut val_type = 0u32;
+        let res = RegQueryValueExW(
+            hkey,
+            val_name.as_ptr(),
+            std::ptr::null(),
+            &mut val_type,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        RegCloseKey(hkey);
+        res == 0
+    }
+
+    unsafe fn toggle_autostart() -> bool {
+        let subkey = to_wstring(REG_RUN_SUBKEY);
+        let val_name = to_wstring(APP_REG_NAME);
+        let currently_enabled = is_autostart_enabled();
+
+        if currently_enabled {
+            let mut hkey = std::ptr::null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_WRITE, &mut hkey) == 0 {
+                RegDeleteValueW(hkey, val_name.as_ptr());
+                RegCloseKey(hkey);
+            }
+            false
+        } else {
+            if let Ok(exe_path) = std::env::current_exe() {
+                let path_str = format!("\"{}\"", exe_path.to_string_lossy());
+                let wide_path = to_wstring(&path_str);
+                let bytes = (wide_path.len() * 2) as u32;
+
+                let mut hkey = std::ptr::null_mut();
+                if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) == 0 {
+                    RegSetValueExW(
+                        hkey,
+                        val_name.as_ptr(),
+                        0,
+                        REG_SZ,
+                        wide_path.as_ptr() as *const u8,
+                        bytes,
+                    );
+                    RegCloseKey(hkey);
+                }
+            }
+            true
+        }
+    }
+
     unsafe fn show_tray_context_menu(hwnd: HWND) {
         let mut pt: POINT = std::mem::zeroed();
         GetCursorPos(&mut pt);
@@ -391,6 +495,7 @@ mod win_gui {
         AppendMenuW(menu, MF_STRING, IDM_QUIT, to_wstring("退出").as_ptr());
 
         SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
         let cmd = TrackPopupMenuEx(
             menu,
             TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
@@ -399,6 +504,7 @@ mod win_gui {
             hwnd,
             std::ptr::null(),
         );
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
         match cmd as usize {
@@ -445,6 +551,7 @@ mod win_gui {
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
         let cmd = TrackPopupMenuEx(
             menu,
             TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
@@ -453,6 +560,7 @@ mod win_gui {
             hwnd,
             std::ptr::null(),
         );
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
         let mut state_guard = STATE.lock().unwrap();
@@ -490,6 +598,7 @@ mod win_gui {
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
         let cmd = TrackPopupMenuEx(
             menu,
             TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
@@ -498,6 +607,7 @@ mod win_gui {
             hwnd,
             std::ptr::null(),
         );
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
         let mut state_guard = STATE.lock().unwrap();
@@ -560,6 +670,7 @@ mod win_gui {
         GetCursorPos(&mut pt);
 
         SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
         let cmd = TrackPopupMenuEx(
             menu,
             TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
@@ -568,6 +679,7 @@ mod win_gui {
             hwnd,
             std::ptr::null(),
         );
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
         let mut state_guard = STATE.lock().unwrap();
@@ -610,14 +722,22 @@ mod win_gui {
                 }
             }
             IDM_ROW_COPY_NAME => {
-                let _ = std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Set-Clipboard -Value '{}'", app.name)])
-                    .spawn();
+                copy_to_clipboard(hwnd, &app.name);
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(format!("已复制名称: {}", app.name));
+                }
+                drop(state_guard);
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_COPY_PID => {
-                let _ = std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Set-Clipboard -Value '{}'", app.pid)])
-                    .spawn();
+                copy_to_clipboard(hwnd, &format!("{}", app.pid));
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(format!("已复制 PID: {}", app.pid));
+                }
+                drop(state_guard);
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             _ => {}
         }
@@ -625,7 +745,14 @@ mod win_gui {
 
     unsafe fn show_settings_menu(hwnd: HWND) {
         let menu: HMENU = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, IDM_CFG_STARTUP, to_wstring("开机自启动设置").as_ptr());
+        let autostart_on = is_autostart_enabled();
+        let autostart_label = if autostart_on {
+            "开机自启动 [已启用 √]"
+        } else {
+            "开机自启动 [未启用]"
+        };
+        let autostart_flags = MF_STRING | if autostart_on { MF_CHECKED } else { 0 };
+        AppendMenuW(menu, autostart_flags, IDM_CFG_STARTUP, to_wstring(autostart_label).as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_CFG_RELOAD, to_wstring("重新加载白名单规则").as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring("关于 Task Cleaner (Windows 11)").as_ptr());
@@ -634,6 +761,7 @@ mod win_gui {
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
         let cmd = TrackPopupMenuEx(
             menu,
             TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
@@ -642,6 +770,7 @@ mod win_gui {
             hwnd,
             std::ptr::null(),
         );
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
         DestroyMenu(menu);
 
         let mut state_guard = STATE.lock().unwrap();
@@ -653,22 +782,31 @@ mod win_gui {
 
         match cmd as usize {
             IDM_CFG_STARTUP => {
-                let caption = to_wstring("开机自启动设置");
-                let msg = to_wstring("如需开机自动启动 Task Cleaner，请按 Win + R 输入 shell:startup，将 TaskCleaner.exe 的快捷方式放入该目录；或在 Windows 设置 -> 应用 -> 启动 中开启。");
-                windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                    hwnd,
-                    msg.as_ptr(),
-                    caption.as_ptr(),
-                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
-                );
+                let now_enabled = toggle_autostart();
+                let status = if now_enabled {
+                    "已开启开机自动启动"
+                } else {
+                    "已关闭开机自动启动"
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(status.to_string());
+                }
+                drop(state_guard);
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CFG_RELOAD => {
                 refresh_scan();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("白名单规则已重载".to_string());
+                }
+                drop(state_guard);
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CFG_ABOUT => {
                 let caption = to_wstring("Task Cleaner");
-                let msg = to_wstring("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n\n轻量优雅的一体化前台任务管理与内存释放套件。");
+                let msg = to_wstring("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n快捷键: Ctrl + Alt + K 呼出/隐藏\n\n轻量优雅的一体化前台任务管理与内存释放套件。");
                 windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
                     hwnd,
                     msg.as_ptr(),
@@ -679,6 +817,7 @@ mod win_gui {
             _ => {}
         }
     }
+
 
     fn execute_clean_all(mode: TerminationMode) {
         let mut state_guard = STATE.lock().unwrap();
@@ -1140,7 +1279,22 @@ mod win_gui {
                 }
                 0
             }
-            WM_ACTIVATE => 0,
+            WM_HOTKEY => {
+                if (wparam as i32) == HOTKEY_TOGGLE_ID {
+                    toggle_window(hwnd);
+                }
+                0
+            }
+            WM_ACTIVATE => {
+                let activation = (wparam & 0xFFFF) as u32;
+                if activation == 0 /* WA_INACTIVE */ {
+                    if !IS_MENU_ACTIVE.load(Ordering::SeqCst) && IS_VISIBLE.load(Ordering::SeqCst) {
+                        ShowWindow(hwnd, SW_HIDE);
+                        IS_VISIBLE.store(false, Ordering::SeqCst);
+                    }
+                }
+                0
+            }
             WM_MOUSEMOVE => {
                 let mut tme: TRACKMOUSEEVENT = std::mem::zeroed();
                 tme.cbSize = std::mem::size_of::<TRACKMOUSEEVENT>() as u32;
@@ -1430,6 +1584,11 @@ mod win_gui {
             )
         };
 
+        // 注册全局快捷键 (Ctrl + Alt + K 呼出/隐藏面板)
+        unsafe {
+            RegisterHotKey(hwnd, HOTKEY_TOGGLE_ID, MOD_CONTROL | MOD_ALT, 0x4B /* 'K' */);
+        }
+
         // 启用 Windows 11 原生圆角 (DWMWCP_ROUND)
         let corner_preference = DWMWCP_ROUND;
         unsafe {
@@ -1496,6 +1655,7 @@ mod win_gui {
         }
 
         unsafe {
+            UnregisterHotKey(hwnd, HOTKEY_TOGGLE_ID);
             Shell_NotifyIconW(NIM_DELETE, &nid);
             DestroyIcon(h_icon);
             let mut state_guard = STATE.lock().unwrap();
