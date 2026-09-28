@@ -1,4 +1,4 @@
-# Task Cleaner (WinUI 3) - Windows 11 运行与日志捕获脚本
+﻿# Task Cleaner (WinUI 3) - Windows 11 运行与日志捕获脚本
 # Dual-licensed under GNU AGPLv3 and Commercial License.
 param (
     [string]$Configuration = "Debug"
