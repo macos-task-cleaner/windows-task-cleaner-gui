@@ -27,13 +27,15 @@ echo  Task Cleaner (WinUI 3) - Windows 11 Run (CMD Fallback)
 echo  Session Log: %LOG_FILE%
 echo ========================================================
 if "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
+    set "PLATFORM=arm64"
     set "ARCH=win-arm64"
 ) else (
+    set "PLATFORM=x64"
     set "ARCH=win-x64"
 )
-echo [INFO] Building and starting WinUI 3 Tray App (Debug, %ARCH%)...
+echo [INFO] Building and starting WinUI 3 Tray App (Debug, %ARCH%, %PLATFORM%)...
 
-dotnet run --project src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj -c Debug -r %ARCH% -v minimal > "%LOG_FILE%" 2>&1
+dotnet run --project src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj -c Debug -r %ARCH% -p:Platform=%PLATFORM% -v minimal > "%LOG_FILE%" 2>&1
 set "EXIT_CODE=%ERRORLEVEL%"
 type "%LOG_FILE%"
 copy /y "%LOG_FILE%" "%LATEST_LOG%" >nul 2>&1

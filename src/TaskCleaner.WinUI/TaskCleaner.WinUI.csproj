@@ -6,6 +6,8 @@
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>TaskCleaner.WinUI</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platform Condition=" '$(Platform)' == '' and '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64' ">arm64</Platform>
+    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
     <Platforms>x64;arm64</Platforms>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <UseWinUI>true</UseWinUI>

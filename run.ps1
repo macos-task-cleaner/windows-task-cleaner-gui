@@ -53,12 +53,13 @@ $script:runExitCode = 0
     }
     Write-Host "[INFO] Current .NET SDK Version: $sdkVersion"
 
-    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win-arm64" } else { "win-x64" }
-    Write-Host "[INFO] Detected Architecture: $arch"
+    $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+    $arch = "win-$platform"
+    Write-Host "[INFO] Detected Platform: $platform, Architecture: $arch"
     Write-Host "[INFO] Building and starting WinUI 3 Tray App ($Configuration, $arch)..."
     $projectPath = "src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj"
     
-    dotnet run --project $projectPath -c $Configuration -r $arch -v minimal
+    dotnet run --project $projectPath -c $Configuration -r $arch -p:Platform=$platform -v minimal
     $script:runExitCode = $LASTEXITCODE
 
     if ($script:runExitCode -ne 0) {
