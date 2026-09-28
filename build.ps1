@@ -1,4 +1,4 @@
-# Task Cleaner (WinUI 3) - Windows 11 单文件发布与日志捕获脚本
+﻿# Task Cleaner (WinUI 3) - Windows 11 Build & Publish Script
 # Dual-licensed under GNU AGPLv3 and Commercial License.
 param (
     [string]$Configuration = "Release",
@@ -6,13 +6,13 @@ param (
     [string]$OutputDir = "publish\win-x64"
 )
 
-# 强制将当前终端与底层进程输入输出流全部绑定为 UTF-8，根除 Win32 CLI 乱码
+# Force terminal and child process streams to UTF-8
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 关闭 .NET CLI 遥测提示与首次运行 Logo，保持终端整洁
+# Silence .NET first-run telemetry and logo
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 $env:DOTNET_NOLOGO = "1"
 
@@ -32,13 +32,13 @@ $latestLogPath = Join-Path $logsDir "build_latest.log"
 
 $header = @"
 ========================================================
- Task Cleaner (WinUI 3) - 独立单文件发布日志
- 开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
- 日志文件: $logFilePath
- 项目根目录: $projectRoot
- 目标架构: $Runtime
- 编译配置: $Configuration
- 输出目录: $OutputDir
+ Task Cleaner (WinUI 3) - Standalone Publish Log
+ Start Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
+ Log File: $logFilePath
+ Project Root: $projectRoot
+ Target Runtime: $Runtime
+ Configuration: $Configuration
+ Output Dir: $OutputDir
 ========================================================
 "@
 
@@ -48,26 +48,26 @@ $header | Out-File -FilePath $logFilePath -Encoding utf8
 $script:buildExitCode = 0
 
 & {
-    Write-Host "[INFO] 检查 .NET SDK 环境..."
+    Write-Host "[INFO] Checking .NET SDK environment..."
     $sdkVersion = dotnet --version 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] 未检测到 .NET SDK，请访问 https://dotnet.microsoft.com/download 安装 .NET 8 SDK。" -ForegroundColor Red
+        Write-Host "[ERROR] .NET SDK not detected. Please install .NET 8 SDK from https://dotnet.microsoft.com/download" -ForegroundColor Red
         $script:buildExitCode = 1
         return
     }
-    Write-Host "[INFO] 当前 .NET SDK 版本: $sdkVersion"
+    Write-Host "[INFO] Current .NET SDK Version: $sdkVersion"
 
-    Write-Host "[INFO] 开始发布 $Runtime 独立免安装单文件可执行文件..."
+    Write-Host "[INFO] Publishing $Runtime standalone single-file executable..."
     $projectPath = "src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj"
     
     dotnet publish $projectPath -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -o $OutputDir -v minimal
     $script:buildExitCode = $LASTEXITCODE
 
     if ($script:buildExitCode -ne 0) {
-        Write-Host "[ERROR] 发布构建失败，退出代码: $($script:buildExitCode)" -ForegroundColor Red
+        Write-Host "[ERROR] Publish build failed with code: $($script:buildExitCode)" -ForegroundColor Red
     } else {
         $exePath = Join-Path $OutputDir "TaskCleaner.WinUI.exe"
-        Write-Host "[SUCCESS] 发布成功！单文件位于: $exePath" -ForegroundColor Green
+        Write-Host "[SUCCESS] Publish successful! Standalone exe located at: $exePath" -ForegroundColor Green
     }
 } 2>&1 | ForEach-Object {
     Write-Host $_
@@ -79,10 +79,10 @@ $exitCode = $script:buildExitCode
 $footer = @"
 
 ========================================================
- 发布结束时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
- 最终构建状态: $(if ($exitCode -eq 0) { '成功 (SUCCESS)' } else { "失败 (FAILED, Code: $exitCode)" })
- 日志已持久化: $logFilePath
- 最新日志副本: $latestLogPath
+ End Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
+ Status: $(if ($exitCode -eq 0) { 'SUCCESS' } else { "FAILED (Code: $exitCode)" })
+ Log File: $logFilePath
+ Latest Copy: $latestLogPath
 ========================================================
 "@
 
