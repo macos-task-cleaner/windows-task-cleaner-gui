@@ -22,3 +22,7 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+
+## Logs & Publish Artifacts
+logs/*.log
+publish/
