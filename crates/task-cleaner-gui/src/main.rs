@@ -58,6 +58,10 @@ mod win_gui {
         EnableWindow, GetKeyState, RegisterHotKey, TrackMouseEvent, UnregisterHotKey, MOD_ALT,
         MOD_CONTROL, MOD_SHIFT, MOD_WIN, TME_LEAVE, TRACKMOUSEEVENT,
     };
+    use windows_sys::Win32::UI::HiDpi::{
+        GetDpiForSystem, GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext,
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
     use windows_sys::Win32::UI::Shell::{
         ExtractIconExW, ShellExecuteExW, ShellExecuteW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON,
         NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
@@ -66,17 +70,17 @@ mod win_gui {
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, GetClientRect,
         GetCursorPos, GetMessageW, GetSystemMetrics, IsWindow, KillTimer, LoadCursorW, MessageBoxW,
-        PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-        SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON,
-        HMENU, HWND_TOPMOST, ICONINFO, IDC_ARROW, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
-        MB_TOPMOST, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
-        SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_BOTTOMALIGN,
+        PostQuitMessage, PrivateExtractIconsW, RegisterClassExW, SetForegroundWindow, SetTimer,
+        SetWindowPos, ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage,
+        CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST, ICONINFO, IDC_ARROW,
+        MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_TOPMOST, MF_CHECKED, MF_POPUP,
+        MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_NOACTIVATE,
+        SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_BOTTOMALIGN,
         TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY,
-        WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP,
-        WM_TIMER, WM_USER,
-        WNDCLASSEXW, WS_CAPTION, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
-        WS_VISIBLE,
+        WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP,
+        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_SYSKEYDOWN,
+        WM_SYSKEYUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_CAPTION, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
@@ -552,6 +556,22 @@ mod win_gui {
         OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
 
+    /// 高精度 DPI 线性缩放助手 (96 DPI 为基准 100%)
+    #[inline]
+    fn scale_dpi(val: i32, dpi: u32) -> i32 {
+        ((val as i64 * dpi as i64 + 48) / 96) as i32
+    }
+
+    /// 高精度 DPI 反向映射为逻辑 96 DPI 坐标 (保持命中检测逻辑 100% 稳定一致)
+    #[inline]
+    fn unscale_dpi(val: i32, dpi: u32) -> i32 {
+        if dpi == 0 || dpi == 96 {
+            val
+        } else {
+            ((val as i64 * 96 + (dpi as i64 / 2)) / dpi as i64) as i32
+        }
+    }
+
     /// 应用名本地化与友好解析
     fn resolve_friendly_name(app: &AppTarget) -> String {
         let name_lower = app.name.to_lowercase();
@@ -590,27 +610,58 @@ mod win_gui {
         }
     }
 
-    /// 提取真实高分辨率应用图标
-    unsafe fn get_app_icon(exe_path: &str, cache: &mut HashMap<String, isize>) -> Option<HICON> {
+    /// 提取真实高分辨率应用图标 (优先使用 PrivateExtractIconsW 原生指定像素，兜底 ExtractIconExW 大图标)
+    unsafe fn get_app_icon(
+        exe_path: &str,
+        target_size: i32,
+        cache: &mut HashMap<String, isize>,
+    ) -> Option<HICON> {
         if exe_path.is_empty() {
             return None;
         }
 
-        if let Some(&h) = cache.get(exe_path) {
+        let cache_key = format!("{}:{}", exe_path, target_size);
+        if let Some(&h) = cache.get(&cache_key) {
             return if h != 0 { Some(h as HICON) } else { None };
         }
 
         let wpath = to_wstring(exe_path);
-        let mut h_small: HICON = 0 as HICON;
-        let count = ExtractIconExW(wpath.as_ptr(), 0, std::ptr::null_mut(), &mut h_small, 1);
+        let mut h_icon: HICON = 0 as HICON;
+        let mut icon_id: u32 = 0;
 
-        if count > 0 && h_small != 0 as HICON {
-            cache.insert(exe_path.to_string(), h_small as isize);
-            Some(h_small)
-        } else {
-            cache.insert(exe_path.to_string(), 0);
-            None
+        // 1. 优先使用 Win32 原生 PrivateExtractIconsW 提取指定目标物理像素高精度图标
+        let count = PrivateExtractIconsW(
+            wpath.as_ptr(),
+            0,
+            target_size,
+            target_size,
+            &mut h_icon,
+            &mut icon_id,
+            1,
+            0,
+        );
+
+        if count > 0 && h_icon != 0 as HICON {
+            cache.insert(cache_key, h_icon as isize);
+            return Some(h_icon);
         }
+
+        // 2. 备用兜底: 使用 ExtractIconExW 提取大图标 (至少 32x32，杜绝模糊 16x16 拉伸)
+        let mut h_large: HICON = 0 as HICON;
+        let mut h_small: HICON = 0 as HICON;
+        let count_ex = ExtractIconExW(wpath.as_ptr(), 0, &mut h_large, &mut h_small, 1);
+        if count_ex > 0 {
+            if h_small != 0 as HICON {
+                DestroyIcon(h_small);
+            }
+            if h_large != 0 as HICON {
+                cache.insert(cache_key, h_large as isize);
+                return Some(h_large);
+            }
+        }
+
+        cache.insert(cache_key, 0);
+        None
     }
 
     /// 检测当前 Windows 任务栏是否为深色模式 (默认 Windows 11 为深色)
@@ -653,8 +704,9 @@ mod win_gui {
 
     /// 动态合成 100% 对齐 macOS 规范的系统级原生胶囊 X (Pill-X) 镂空托盘图标
     unsafe fn create_default_tray_icon() -> HICON {
-        let cx = GetSystemMetrics(SM_CXSMICON).max(16);
-        let cy = GetSystemMetrics(SM_CYSMICON).max(16);
+        let dpi = GetDpiForSystem().max(96);
+        let cx = GetSystemMetricsForDpi(SM_CXSMICON, dpi).max(16);
+        let cy = GetSystemMetricsForDpi(SM_CYSMICON, dpi).max(16);
 
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -951,8 +1003,12 @@ mod win_gui {
         }
     }
 
-    /// 自动将窗口精确吸附在屏幕右下角任务栏正上方
+    /// 自动将窗口精确吸附在屏幕右下角任务栏正上方 (支持高 DPI 动态定位与多显示器自适应)
     unsafe fn position_window(hwnd: HWND) {
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let win_w = scale_dpi(WINDOW_WIDTH, dpi);
+        let win_h = scale_dpi(WINDOW_HEIGHT, dpi);
+
         let mut cursor: POINT = std::mem::zeroed();
         GetCursorPos(&mut cursor);
 
@@ -971,14 +1027,17 @@ mod win_gui {
         let screen_w = work_area.right - work_area.left;
         let screen_h = work_area.bottom - work_area.top;
 
-        let x = if screen_w > WINDOW_WIDTH {
-            work_area.right - WINDOW_WIDTH - 16
+        let margin_x = scale_dpi(16, dpi);
+        let margin_y = scale_dpi(12, dpi);
+
+        let x = if screen_w > win_w {
+            work_area.right - win_w - margin_x
         } else {
             work_area.left
         };
 
-        let y = if screen_h > WINDOW_HEIGHT {
-            work_area.bottom - WINDOW_HEIGHT - 12
+        let y = if screen_h > win_h {
+            work_area.bottom - win_h - margin_y
         } else {
             work_area.top
         };
@@ -988,8 +1047,8 @@ mod win_gui {
             HWND_TOPMOST,
             x,
             y,
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
+            win_w,
+            win_h,
             SWP_SHOWWINDOW,
         );
     }
@@ -1156,6 +1215,15 @@ mod win_gui {
                 let mut rc: RECT = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rc);
 
+                let dpi = GetDpiForWindow(hwnd).max(96);
+                let s = |v: i32| scale_dpi(v, dpi);
+                let s_rect = |l: i32, t: i32, r: i32, b: i32| RECT {
+                    left: scale_dpi(l, dpi),
+                    top: scale_dpi(t, dpi),
+                    right: scale_dpi(r, dpi),
+                    bottom: scale_dpi(b, dpi),
+                };
+
                 // 背景
                 let bg_brush = CreateSolidBrush(rgb(28, 28, 32));
                 FillRect(hdc, &rc, bg_brush);
@@ -1165,28 +1233,28 @@ mod win_gui {
 
                 // 标题
                 SetTextColor(hdc, rgb(255, 255, 255));
-                let title_font = create_font(15, FW_BOLD as i32);
+                let title_font = create_font(s(15), FW_BOLD as i32);
                 let old_font = SelectObject(hdc, title_font);
-                let mut tr = RECT { left: 24, top: 14, right: rc.right - 24, bottom: 36 };
+                let mut tr = s_rect(24, 14, 380 - 24, 36);
                 let title_txt = to_wstring("录制一键清理快捷键");
                 DrawTextW(hdc, title_txt.as_ptr(), -1, &mut tr, DT_LEFT | DT_SINGLELINE);
 
                 // 副标题提示
-                let sub_font = create_font(12, FW_NORMAL as i32);
+                let sub_font = create_font(s(12), FW_NORMAL as i32);
                 SelectObject(hdc, sub_font);
                 SetTextColor(hdc, rgb(156, 163, 175));
-                let mut sr = RECT { left: 24, top: 38, right: rc.right - 24, bottom: 58 };
+                let mut sr = s_rect(24, 38, 380 - 24, 58);
                 let sub_txt = to_wstring("请在键盘上按下组合键 (按下后直接执行一键退出未保护任务)");
                 DrawTextW(hdc, sub_txt.as_ptr(), -1, &mut sr, DT_LEFT | DT_SINGLELINE);
                 DeleteObject(sub_font);
 
                 // 按键展示框 (居中圆角卡片)
-                let box_rect = RECT { left: 24, top: 66, right: rc.right - 24, bottom: 114 };
+                let box_rect = s_rect(24, 66, 380 - 24, 114);
                 let box_brush = CreateSolidBrush(rgb(40, 40, 46));
                 let box_pen = CreatePen(PS_SOLID as i32, 1, rgb(0, 120, 215));
                 let old_pen = SelectObject(hdc, box_pen);
                 let old_brush = SelectObject(hdc, box_brush);
-                RoundRect(hdc, box_rect.left, box_rect.top, box_rect.right, box_rect.bottom, 8, 8);
+                RoundRect(hdc, box_rect.left, box_rect.top, box_rect.right, box_rect.bottom, s(8), s(8));
                 SelectObject(hdc, old_brush);
                 SelectObject(hdc, old_pen);
                 DeleteObject(box_brush);
@@ -1196,7 +1264,7 @@ mod win_gui {
                     let guard = RECORDER_STATE.lock().unwrap();
                     guard.as_ref().map(|d| d.display.clone()).unwrap_or_else(|| "按下快捷键...".to_string())
                 };
-                let key_font = create_font(16, FW_BOLD as i32);
+                let key_font = create_font(s(16), FW_BOLD as i32);
                 SelectObject(hdc, key_font);
                 SetTextColor(hdc, rgb(255, 255, 255));
                 let mut kr = box_rect;
@@ -1205,7 +1273,7 @@ mod win_gui {
                 DeleteObject(key_font);
 
                 // 底部三按钮
-                let btn_font = create_font(13, FW_SEMIBOLD as i32);
+                let btn_font = create_font(s(13), FW_SEMIBOLD as i32);
                 SelectObject(hdc, btn_font);
 
                 let draw_btn = |hdc: HDC, rect: RECT, text: &str, bg_color: COLORREF, text_color: COLORREF| {
@@ -1213,7 +1281,7 @@ mod win_gui {
                     let p_pen = CreatePen(PS_SOLID as i32, 1, bg_color);
                     let o_p = SelectObject(hdc, p_pen);
                     let o_b = SelectObject(hdc, b_brush);
-                    RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 6, 6);
+                    RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, s(6), s(6));
                     SelectObject(hdc, o_b);
                     SelectObject(hdc, o_p);
                     DeleteObject(b_brush);
@@ -1225,12 +1293,12 @@ mod win_gui {
                     DrawTextW(hdc, wt.as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 };
 
-                let btn_y = 126;
-                let btn_h = 32;
-                let btn_w = 98;
-                let btn_save = RECT { left: 24, top: btn_y, right: 24 + btn_w, bottom: btn_y + btn_h };
-                let btn_reset = RECT { left: 132, top: btn_y, right: 132 + btn_w, bottom: btn_y + btn_h };
-                let btn_cancel = RECT { left: 240, top: btn_y, right: 240 + btn_w, bottom: btn_y + btn_h };
+                let btn_y = s(126);
+                let btn_h = s(32);
+                let btn_w = s(98);
+                let btn_save = RECT { left: s(24), top: btn_y, right: s(24) + btn_w, bottom: btn_y + btn_h };
+                let btn_reset = RECT { left: s(132), top: btn_y, right: s(132) + btn_w, bottom: btn_y + btn_h };
+                let btn_cancel = RECT { left: s(240), top: btn_y, right: s(240) + btn_w, bottom: btn_y + btn_h };
 
                 draw_btn(hdc, btn_save, "保存生效", rgb(0, 120, 215), rgb(255, 255, 255));
                 draw_btn(hdc, btn_reset, "恢复默认", rgb(52, 52, 58), rgb(220, 220, 225));
@@ -1293,8 +1361,11 @@ mod win_gui {
             }
             WM_SYSKEYUP | WM_KEYUP => 0,
             WM_LBUTTONUP => {
-                let x = (lparam & 0xFFFF) as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                let raw_x = (lparam & 0xFFFF) as i32;
+                let raw_y = ((lparam >> 16) & 0xFFFF) as i32;
+                let dpi = GetDpiForWindow(hwnd).max(96);
+                let x = unscale_dpi(raw_x, dpi);
+                let y = unscale_dpi(raw_y, dpi);
                 if y >= 126 && y <= 158 {
                     if x >= 24 && x <= 122 {
                         save_recorded_hotkey(hwnd);
@@ -1422,10 +1493,11 @@ mod win_gui {
             RECORDER_CLASS_REGISTERED.store(true, Ordering::SeqCst);
         }
 
+        let dpi = GetDpiForWindow(parent_hwnd).max(96);
         let screen_w = GetSystemMetrics(0 /* SM_CXSCREEN */);
         let screen_h = GetSystemMetrics(1 /* SM_CYSCREEN */);
-        let dlg_w = 380;
-        let dlg_h = 210;
+        let dlg_w = scale_dpi(380, dpi);
+        let dlg_h = scale_dpi(210, dpi);
         let x = (screen_w - dlg_w) / 2;
         let y = (screen_h - dlg_h) / 2;
 
@@ -1536,7 +1608,8 @@ mod win_gui {
         add_item(menu, IDM_SORT_WINDOWS, tr(I18nKey::SortWindows, lang), cur_mode == SortMode::Windows);
         add_item(menu, IDM_SORT_DEFAULT, tr(I18nKey::SortDefault, lang), cur_mode == SortMode::Default);
 
-        let mut pt = POINT { x: 260, y: 38 };
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let mut pt = POINT { x: scale_dpi(260, dpi), y: scale_dpi(38, dpi) };
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
@@ -1591,7 +1664,8 @@ mod win_gui {
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, IDM_ACTION_PURGE, to_wstring(tr(I18nKey::ActionCleanPurge, lang)).as_ptr());
 
-        let mut pt = POINT { x: 298, y: 124 };
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let mut pt = POINT { x: scale_dpi(298, dpi), y: scale_dpi(124, dpi) };
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
@@ -1926,7 +2000,8 @@ mod win_gui {
         AppendMenuW(menu, MF_STRING, IDM_CFG_GITHUB, to_wstring(tr(I18nKey::MenuGithubRepo, lang)).as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring(tr(I18nKey::BtnAbout, lang)).as_ptr());
 
-        let mut pt = POINT { x: 14, y: 444 };
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let mut pt = POINT { x: scale_dpi(14, dpi), y: scale_dpi(444, dpi) };
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
@@ -2236,7 +2311,8 @@ mod win_gui {
             AppendMenuW(menu, flags, IDM_LANG_BASE + idx, to_wstring(title).as_ptr());
         }
 
-        let mut pt = POINT { x: 222, y: 444 };
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let mut pt = POINT { x: scale_dpi(222, dpi), y: scale_dpi(444, dpi) };
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
@@ -2348,17 +2424,26 @@ mod win_gui {
         let mem_bmp = CreateCompatibleBitmap(hdc, client_rect.right, client_rect.bottom);
         let old_bmp = SelectObject(mem_dc, mem_bmp);
 
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let s = |v: i32| scale_dpi(v, dpi);
+        let s_rect = |l: i32, t: i32, r: i32, b: i32| RECT {
+            left: scale_dpi(l, dpi),
+            top: scale_dpi(t, dpi),
+            right: scale_dpi(r, dpi),
+            bottom: scale_dpi(b, dpi),
+        };
+
         // 1. 底板画布
         let bg_brush = CreateSolidBrush(COLOR_CANVAS_BG);
         FillRect(mem_dc, &client_rect, bg_brush);
         DeleteObject(bg_brush);
 
-        // 字体矩阵
-        let font_title = create_font(15, FW_BOLD as i32);
-        let font_card_title = create_font(13, FW_SEMIBOLD as i32);
-        let font_body = create_font(12, FW_MEDIUM as i32);
-        let font_sub = create_font(10, FW_NORMAL as i32);
-        let font_badge = create_font(9, FW_SEMIBOLD as i32);
+        // 字体矩阵 (根据 DPI 精确点对点适配物理像素，确保 100% 锐利清晰无模糊)
+        let font_title = create_font(s(15), FW_BOLD as i32);
+        let font_card_title = create_font(s(13), FW_SEMIBOLD as i32);
+        let font_body = create_font(s(12), FW_MEDIUM as i32);
+        let font_sub = create_font(s(10), FW_NORMAL as i32);
+        let font_badge = create_font(s(9), FW_SEMIBOLD as i32);
 
         SetBkMode(mem_dc, TRANSPARENT as i32);
 
@@ -2374,23 +2459,13 @@ mod win_gui {
             // 标题: Task Cleaner
             SelectObject(mem_dc, font_title);
             SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
-            let mut title_rect = RECT {
-                left: 14,
-                top: 12,
-                right: 110,
-                bottom: 36,
-            };
+            let mut title_rect = s_rect(14, 12, 110, 36);
             let title_text = to_wstring("Task Cleaner");
             DrawTextW(mem_dc, title_text.as_ptr(), -1, &mut title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
             // 运行中胶囊徽章 (Pill Badge)
-            let badge_rect = RECT {
-                left: 112,
-                top: 15,
-                right: 190,
-                bottom: 33,
-            };
-            draw_rounded_box(mem_dc, &badge_rect, 10, COLOR_BADGE_BG, None);
+            let badge_rect = s_rect(112, 15, 190, 33);
+            draw_rounded_box(mem_dc, &badge_rect, s(10), COLOR_BADGE_BG, None);
             SelectObject(mem_dc, font_badge);
             SetTextColor(mem_dc, COLOR_BADGE_TEXT);
             let mut b_text_rect = badge_rect;
@@ -2405,33 +2480,23 @@ mod win_gui {
 
             // 排序按钮 [↕] (受偏好开关控制)
             if state.prefs.show_sort_button {
-                let sort_rect = RECT {
-                    left: 236,
-                    top: 13,
-                    right: 258,
-                    bottom: 35,
-                };
+                let sort_rect = s_rect(236, 13, 258, 35);
                 let is_sort_hover = hovered_btn == Some(HoverButton::SortMenu);
                 if is_sort_hover {
-                    draw_rounded_box(mem_dc, &sort_rect, 6, COLOR_BTN_HOVER, None);
+                    draw_rounded_box(mem_dc, &sort_rect, s(6), COLOR_BTN_HOVER, None);
                 }
                 SelectObject(mem_dc, font_body);
                 SetTextColor(mem_dc, if is_sort_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
-                let mut s_rect = sort_rect;
+                let mut s_rect_txt = sort_rect;
                 let sort_icon = to_wstring("↕");
-                DrawTextW(mem_dc, sort_icon.as_ptr(), -1, &mut s_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawTextW(mem_dc, sort_icon.as_ptr(), -1, &mut s_rect_txt, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
 
             // 刷新按钮 [↻]
-            let ref_rect = RECT {
-                left: 262,
-                top: 13,
-                right: 284,
-                bottom: 35,
-            };
+            let ref_rect = s_rect(262, 13, 284, 35);
             let is_ref_hover = hovered_btn == Some(HoverButton::Refresh);
             if is_ref_hover {
-                draw_rounded_box(mem_dc, &ref_rect, 6, COLOR_BTN_HOVER, None);
+                draw_rounded_box(mem_dc, &ref_rect, s(6), COLOR_BTN_HOVER, None);
             }
             SelectObject(mem_dc, font_body);
             SetTextColor(mem_dc, if is_ref_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
@@ -2440,15 +2505,10 @@ mod win_gui {
             DrawTextW(mem_dc, ref_icon.as_ptr(), -1, &mut r_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 最小化到托盘按钮 [×]
-            let close_rect = RECT {
-                left: 288,
-                top: 13,
-                right: 308,
-                bottom: 35,
-            };
+            let close_rect = s_rect(288, 13, 308, 35);
             let is_close_hover = hovered_btn == Some(HoverButton::CloseToTray);
             if is_close_hover {
-                draw_rounded_box(mem_dc, &close_rect, 6, COLOR_BTN_HOVER, None);
+                draw_rounded_box(mem_dc, &close_rect, s(6), COLOR_BTN_HOVER, None);
             }
             SelectObject(mem_dc, font_body);
             SetTextColor(mem_dc, if is_close_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
@@ -2459,25 +2519,15 @@ mod win_gui {
             // ----------------------------------------------------
             // 3. 核心操作卡片 (Hero Action Card)
             // ----------------------------------------------------
-            let card_rect = RECT {
-                left: 12,
-                top: 42,
-                right: 308,
-                bottom: 130,
-            };
-            draw_rounded_box(mem_dc, &card_rect, 10, COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
+            let card_rect = s_rect(12, 42, 308, 130);
+            draw_rounded_box(mem_dc, &card_rect, s(10), COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
 
             let has_targets = !state.targets.is_empty();
 
             // 卡片标题与副标题
             SelectObject(mem_dc, font_card_title);
             SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
-            let mut card_title = RECT {
-                left: 24,
-                top: 50,
-                right: 230,
-                bottom: 70,
-            };
+            let mut card_title = s_rect(24, 50, 230, 70);
             let title_str = if has_targets {
                 let unit = match lang {
                     Language::ZhHans => "个待结束应用",
@@ -2494,12 +2544,7 @@ mod win_gui {
 
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
-            let mut card_sub = RECT {
-                left: 24,
-                top: 70,
-                right: 230,
-                bottom: 86,
-            };
+            let mut card_sub = s_rect(24, 70, 230, 86);
             let sub_str = if let Some(msg) = &state.status_message {
                 msg.clone()
             } else if has_targets {
@@ -2517,12 +2562,7 @@ mod win_gui {
             DrawTextW(mem_dc, card_sub_txt.as_ptr(), -1, &mut card_sub, DT_LEFT | DT_SINGLELINE);
 
             // 右上角状态胶囊标签 (待处理 / 已就绪)
-            let tag_rect = RECT {
-                left: 242,
-                top: 50,
-                right: 298,
-                bottom: 68,
-            };
+            let tag_rect = s_rect(242, 50, 298, 68);
             let tag_bg = if has_targets {
                 COLOR_STATUS_PENDING_BG
             } else {
@@ -2533,7 +2573,7 @@ mod win_gui {
             } else {
                 COLOR_STATUS_READY_TEXT
             };
-            draw_rounded_box(mem_dc, &tag_rect, 9, tag_bg, None);
+            draw_rounded_box(mem_dc, &tag_rect, s(9), tag_bg, None);
             SelectObject(mem_dc, font_badge);
             SetTextColor(mem_dc, tag_fg);
             let mut tr_rect = tag_rect;
@@ -2545,12 +2585,7 @@ mod win_gui {
             DrawTextW(mem_dc, tag_txt.as_ptr(), -1, &mut tr_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 核心操作按钮组: 结束大按钮 + 选项下拉箭头
-            let btn_main_rect = RECT {
-                left: 22,
-                top: 90,
-                right: if has_targets { 268 } else { 298 },
-                bottom: 122,
-            };
+            let btn_main_rect = s_rect(22, 90, if has_targets { 268 } else { 298 }, 122);
             let is_main_hover = hovered_btn == Some(HoverButton::HeroMain);
             let main_btn_bg = if !has_targets {
                 COLOR_STATUS_PENDING_BG
@@ -2559,7 +2594,7 @@ mod win_gui {
             } else {
                 COLOR_HERO_BTN
             };
-            draw_rounded_box(mem_dc, &btn_main_rect, 6, main_btn_bg, None);
+            draw_rounded_box(mem_dc, &btn_main_rect, s(6), main_btn_bg, None);
 
             SelectObject(mem_dc, font_body);
             SetTextColor(mem_dc, if has_targets { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
@@ -2577,19 +2612,14 @@ mod win_gui {
 
             // 下拉小箭头 (仅当有待结束任务时显示)
             if has_targets {
-                let btn_chev_rect = RECT {
-                    left: 272,
-                    top: 90,
-                    right: 298,
-                    bottom: 122,
-                };
+                let btn_chev_rect = s_rect(272, 90, 298, 122);
                 let is_chev_hover = hovered_btn == Some(HoverButton::HeroChevron);
                 let chev_bg = if is_chev_hover {
                     COLOR_HERO_BTN_HOVER
                 } else {
                     COLOR_HERO_BTN
                 };
-                draw_rounded_box(mem_dc, &btn_chev_rect, 6, chev_bg, None);
+                draw_rounded_box(mem_dc, &btn_chev_rect, s(6), chev_bg, None);
                 SelectObject(mem_dc, font_sub);
                 SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
                 let mut bc_text_rect = btn_chev_rect;
@@ -2600,13 +2630,8 @@ mod win_gui {
             // ----------------------------------------------------
             // 4. 分段选择器 (Segmented Tab Bar)
             // ----------------------------------------------------
-            let tab_container = RECT {
-                left: 12,
-                top: 138,
-                right: 308,
-                bottom: 166,
-            };
-            draw_rounded_box(mem_dc, &tab_container, 8, COLOR_TAB_BG, None);
+            let tab_container = s_rect(12, 138, 308, 166);
+            draw_rounded_box(mem_dc, &tab_container, s(8), COLOR_TAB_BG, None);
 
             let tab_items = [
                 (tr(I18nKey::TabTargets, lang), state.targets.len()),
@@ -2617,44 +2642,39 @@ mod win_gui {
             let tab_w = (296 - 4) / 3;
             for (idx, (tab_title, count)) in tab_items.iter().enumerate() {
                 let tx = 14 + (idx as i32 * tab_w);
-                let tab_rect = RECT {
-                    left: tx,
-                    top: 140,
-                    right: tx + tab_w - 2,
-                    bottom: 164,
-                };
+                let tab_rect = s_rect(tx, 140, tx + tab_w - 2, 164);
                 let is_active = state.active_tab == idx;
                 let is_tab_hover = hovered_btn == Some(HoverButton::Tab(idx));
 
                 if is_active {
-                    draw_rounded_box(mem_dc, &tab_rect, 6, COLOR_TAB_ACTIVE, None);
+                    draw_rounded_box(mem_dc, &tab_rect, s(6), COLOR_TAB_ACTIVE, None);
                 } else if is_tab_hover {
-                    draw_rounded_box(mem_dc, &tab_rect, 6, COLOR_BTN_HOVER, None);
+                    draw_rounded_box(mem_dc, &tab_rect, s(6), COLOR_BTN_HOVER, None);
                 }
 
                 SelectObject(mem_dc, font_sub);
                 SetTextColor(mem_dc, if is_active { rgb(255, 255, 255) } else { COLOR_TAB_INACTIVE_TEXT });
                 let mut t_text_rect = RECT {
-                    left: tab_rect.left + 4,
+                    left: tab_rect.left + s(4),
                     top: tab_rect.top,
-                    right: tab_rect.right - 24,
+                    right: tab_rect.right - s(24),
                     bottom: tab_rect.bottom,
                 };
                 let tw = to_wstring(tab_title);
                 DrawTextW(mem_dc, tw.as_ptr(), -1, &mut t_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
                 let badge_pill = RECT {
-                    left: tab_rect.right - 22,
-                    top: tab_rect.top + 4,
-                    right: tab_rect.right - 4,
-                    bottom: tab_rect.bottom - 4,
+                    left: tab_rect.right - s(22),
+                    top: tab_rect.top + s(4),
+                    right: tab_rect.right - s(4),
+                    bottom: tab_rect.bottom - s(4),
                 };
                 let pill_bg = if is_active {
                     rgb(30, 144, 255)
                 } else {
                     COLOR_TAB_BADGE_INACTIVE
                 };
-                draw_rounded_box(mem_dc, &badge_pill, 6, pill_bg, None);
+                draw_rounded_box(mem_dc, &badge_pill, s(6), pill_bg, None);
                 SelectObject(mem_dc, font_badge);
                 SetTextColor(mem_dc, if is_active { rgb(255, 255, 255) } else { COLOR_TAB_INACTIVE_TEXT });
                 let mut bp_rect = badge_pill;
@@ -2665,13 +2685,8 @@ mod win_gui {
             // ----------------------------------------------------
             // 5. 应用列表区 (List Container Card)
             // ----------------------------------------------------
-            let list_container = RECT {
-                left: 12,
-                top: 174,
-                right: 308,
-                bottom: 434,
-            };
-            draw_rounded_box(mem_dc, &list_container, 10, COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
+            let list_container = s_rect(12, 174, 308, 434);
+            draw_rounded_box(mem_dc, &list_container, s(10), COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
 
             let items: Vec<(&AppTarget, bool)> = match state.active_tab {
                 1 => state.protected.iter().map(|(a, _)| (a, true)).collect(),
@@ -2687,48 +2702,28 @@ mod win_gui {
             if items.is_empty() {
                 SelectObject(mem_dc, font_title);
                 SetTextColor(mem_dc, COLOR_ACCENT_BLUE);
-                let mut check_rect = RECT {
-                    left: 12,
-                    top: 220,
-                    right: 308,
-                    bottom: 250,
-                };
+                let mut check_rect = s_rect(12, 220, 308, 250);
                 let check_txt = to_wstring("[OK]");
                 DrawTextW(mem_dc, check_txt.as_ptr(), -1, &mut check_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
                 SelectObject(mem_dc, font_card_title);
                 SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
-                let mut empty_title = RECT {
-                    left: 12,
-                    top: 255,
-                    right: 308,
-                    bottom: 275,
-                };
+                let mut empty_title = s_rect(12, 255, 308, 275);
                 let empty_title_txt = to_wstring(tr(I18nKey::EmptyTargetsTitle, lang));
                 DrawTextW(mem_dc, empty_title_txt.as_ptr(), -1, &mut empty_title, DT_CENTER | DT_SINGLELINE);
 
                 SelectObject(mem_dc, font_sub);
                 SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
-                let mut empty_sub = RECT {
-                    left: 12,
-                    top: 278,
-                    right: 308,
-                    bottom: 295,
-                };
+                let mut empty_sub = s_rect(12, 278, 308, 295);
                 let empty_sub_txt = to_wstring(tr(I18nKey::EmptyTargetsSubtitle, lang));
                 DrawTextW(mem_dc, empty_sub_txt.as_ptr(), -1, &mut empty_sub, DT_CENTER | DT_SINGLELINE);
 
-                let view_all_rect = RECT {
-                    left: 80,
-                    top: 310,
-                    right: 240,
-                    bottom: 334,
-                };
+                let view_all_rect = s_rect(80, 310, 240, 334);
                 let is_va_hover = hovered_btn == Some(HoverButton::ViewAllFromEmpty);
                 draw_rounded_box(
                     mem_dc,
                     &view_all_rect,
-                    12,
+                    s(12),
                     if is_va_hover { COLOR_HERO_BTN_HOVER } else { COLOR_HERO_BTN },
                     None,
                 );
@@ -2739,18 +2734,21 @@ mod win_gui {
                 DrawTextW(mem_dc, va_txt.as_ptr(), -1, &mut va_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             } else {
                 let scroll = state.scroll_offset;
+                let row_height = s(ROW_HEIGHT);
+                let icon_size = s(24);
+
                 for i in 0..VISIBLE_ROWS {
                     let actual_idx = scroll + i;
                     if actual_idx >= items.len() {
                         break;
                     }
                     let (app, is_protected) = items[actual_idx];
-                    let y = 175 + (i as i32 * ROW_HEIGHT);
+                    let y = s(175) + (i as i32 * row_height);
                     let row_rect = RECT {
-                        left: 14,
+                        left: s(14),
                         top: y,
-                        right: 306,
-                        bottom: y + ROW_HEIGHT,
+                        right: s(306),
+                        bottom: y + row_height,
                     };
 
                     let is_row_hover = state.hovered_row == Some(i);
@@ -2760,28 +2758,28 @@ mod win_gui {
                         DeleteObject(r_bg);
                     }
 
-                    // 1. 真实高清应用图标
-                    let icon_opt = get_app_icon(&app.exe_path, &mut state.icon_cache);
+                    // 1. 真实高清应用图标 (指定当前 DPI 目标物理像素，原生清晰渲染)
+                    let icon_opt = get_app_icon(&app.exe_path, icon_size, &mut state.icon_cache);
                     if let Some(h_icon) = icon_opt {
-                        DrawIconEx(mem_dc, 22, y + 8, h_icon, 24, 24, 0, 0 as HBRUSH, DI_NORMAL);
+                        DrawIconEx(mem_dc, s(22), y + s(8), h_icon, icon_size, icon_size, 0, 0 as HBRUSH, DI_NORMAL);
                     } else {
                         let def_rect = RECT {
-                            left: 22,
-                            top: y + 8,
-                            right: 46,
-                            bottom: y + 32,
+                            left: s(22),
+                            top: y + s(8),
+                            right: s(22) + icon_size,
+                            bottom: y + s(8) + icon_size,
                         };
-                        draw_rounded_box(mem_dc, &def_rect, 5, COLOR_STATUS_PENDING_BG, None);
+                        draw_rounded_box(mem_dc, &def_rect, s(5), COLOR_STATUS_PENDING_BG, None);
                     }
 
                     // 2. 应用友好主名称
                     SelectObject(mem_dc, font_body);
                     SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
                     let mut name_rect = RECT {
-                        left: 52,
-                        top: y + 4,
-                        right: 248,
-                        bottom: y + 22,
+                        left: s(52),
+                        top: y + s(4),
+                        right: s(248),
+                        bottom: y + s(22),
                     };
                     let friendly_name = resolve_friendly_name(app);
                     let name_txt = to_wstring(&friendly_name);
@@ -2791,10 +2789,10 @@ mod win_gui {
                     SelectObject(mem_dc, font_sub);
                     SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
                     let mut sub_rect = RECT {
-                        left: 52,
-                        top: y + 22,
-                        right: 248,
-                        bottom: y + 38,
+                        left: s(52),
+                        top: y + s(22),
+                        right: s(248),
+                        bottom: y + s(38),
                     };
 
                     let win_unit = tr(I18nKey::UnitWindows, lang);
@@ -2826,14 +2824,14 @@ mod win_gui {
                     // 4. 右侧操作按钮组
                     if !is_protected {
                         let trash_rect = RECT {
-                            left: 256,
-                            top: y + 10,
-                            right: 278,
-                            bottom: y + 32,
+                            left: s(256),
+                            top: y + s(10),
+                            right: s(278),
+                            bottom: y + s(32),
                         };
                         let is_trash_hover = hovered_btn == Some(HoverButton::RowTrash(i));
                         if is_trash_hover {
-                            draw_rounded_box(mem_dc, &trash_rect, 4, COLOR_BTN_HOVER, None);
+                            draw_rounded_box(mem_dc, &trash_rect, s(4), COLOR_BTN_HOVER, None);
                         }
                         SelectObject(mem_dc, font_body);
                         SetTextColor(mem_dc, if is_trash_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
@@ -2844,14 +2842,14 @@ mod win_gui {
 
                     // 拓展操作按钮 (竖三点 ⋮)
                     let more_rect = RECT {
-                        left: 282,
-                        top: y + 10,
-                        right: 304,
-                        bottom: y + 32,
+                        left: s(282),
+                        top: y + s(10),
+                        right: s(304),
+                        bottom: y + s(32),
                     };
                     let is_more_hover = hovered_btn == Some(HoverButton::RowMore(i));
                     if is_more_hover {
-                        draw_rounded_box(mem_dc, &more_rect, 4, COLOR_BTN_HOVER, None);
+                        draw_rounded_box(mem_dc, &more_rect, s(4), COLOR_BTN_HOVER, None);
                     }
                     SelectObject(mem_dc, font_body);
                     SetTextColor(mem_dc, if is_more_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
@@ -2862,10 +2860,10 @@ mod win_gui {
                     // 行分割线
                     if i < VISIBLE_ROWS - 1 && actual_idx < items.len() - 1 {
                         let sep_rect = RECT {
-                            left: 52,
-                            top: y + ROW_HEIGHT - 1,
-                            right: 300,
-                            bottom: y + ROW_HEIGHT,
+                            left: s(52),
+                            top: y + row_height - 1,
+                            right: s(300),
+                            bottom: y + row_height,
                         };
                         let s_brush = CreateSolidBrush(COLOR_ROW_SEP);
                         FillRect(mem_dc, &sep_rect, s_brush);
@@ -2876,43 +2874,33 @@ mod win_gui {
                 // 滚动条指示器
                 if items.len() > VISIBLE_ROWS {
                     let total = items.len() as f32;
-                    let track_h = 240.0;
-                    let thumb_h = (VISIBLE_ROWS as f32 / total * track_h).max(20.0);
-                    let thumb_y = 180.0
+                    let track_h = s(240) as f32;
+                    let thumb_h = (VISIBLE_ROWS as f32 / total * track_h).max(s(20) as f32);
+                    let thumb_y = s(180) as f32
                         + (scroll as f32 / (total - VISIBLE_ROWS as f32) * (track_h - thumb_h));
                     let thumb_rect = RECT {
-                        left: 304,
+                        left: s(304),
                         top: thumb_y as i32,
-                        right: 307,
+                        right: s(307),
                         bottom: (thumb_y + thumb_h) as i32,
                     };
-                    draw_rounded_box(mem_dc, &thumb_rect, 2, COLOR_BADGE_BG, None);
+                    draw_rounded_box(mem_dc, &thumb_rect, s(2), COLOR_BADGE_BG, None);
                 }
             }
 
             // ----------------------------------------------------
             // 6. 底栏 (Footer Toolbar)
             // ----------------------------------------------------
-            let sep_line = RECT {
-                left: 12,
-                top: 442,
-                right: 308,
-                bottom: 443,
-            };
+            let sep_line = s_rect(12, 442, 308, 443);
             let foot_brush = CreateSolidBrush(COLOR_CARD_BORDER);
             FillRect(mem_dc, &sep_line, foot_brush);
             DeleteObject(foot_brush);
 
             // 配置项按钮 (左侧)
-            let cfg_rect = RECT {
-                left: 14,
-                top: 448,
-                right: 90,
-                bottom: 472,
-            };
+            let cfg_rect = s_rect(14, 448, 90, 472);
             let is_cfg_hover = hovered_btn == Some(HoverButton::Settings);
             if is_cfg_hover {
-                draw_rounded_box(mem_dc, &cfg_rect, 4, COLOR_BTN_HOVER, None);
+                draw_rounded_box(mem_dc, &cfg_rect, s(4), COLOR_BTN_HOVER, None);
             }
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, if is_cfg_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
@@ -2921,15 +2909,10 @@ mod win_gui {
             DrawTextW(mem_dc, cfg_txt.as_ptr(), -1, &mut cr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 语言切换按钮 (中间偏右 [文/A])
-            let lang_rect = RECT {
-                left: 196,
-                top: 448,
-                right: 248,
-                bottom: 472,
-            };
+            let lang_rect = s_rect(196, 448, 248, 472);
             let is_lang_hover = hovered_btn == Some(HoverButton::Language);
             if is_lang_hover {
-                draw_rounded_box(mem_dc, &lang_rect, 4, COLOR_BTN_HOVER, None);
+                draw_rounded_box(mem_dc, &lang_rect, s(4), COLOR_BTN_HOVER, None);
             }
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, if is_lang_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
@@ -2938,21 +2921,16 @@ mod win_gui {
             DrawTextW(mem_dc, lang_txt.as_ptr(), -1, &mut lr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 退出按钮 (右侧)
-            let quit_rect = RECT {
-                left: 254,
-                top: 448,
-                right: 306,
-                bottom: 472,
-            };
+            let quit_rect = s_rect(254, 448, 306, 472);
             let is_q_hover = hovered_btn == Some(HoverButton::Quit);
             if is_q_hover {
-                draw_rounded_box(mem_dc, &quit_rect, 4, COLOR_BTN_HOVER, None);
+                draw_rounded_box(mem_dc, &quit_rect, s(4), COLOR_BTN_HOVER, None);
             }
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, if is_q_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
             let mut qr = quit_rect;
-            let q_txt = to_wstring(tr(I18nKey::BtnQuit, lang));
-            DrawTextW(mem_dc, q_txt.as_ptr(), -1, &mut qr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            let quit_txt = to_wstring(tr(I18nKey::BtnQuit, lang));
+            DrawTextW(mem_dc, quit_txt.as_ptr(), -1, &mut qr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
         BitBlt(hdc, 0, 0, client_rect.right, client_rect.bottom, mem_dc, 0, 0, SRCCOPY);
@@ -3023,6 +3001,24 @@ mod win_gui {
                 update_tray_icon(hwnd);
                 0
             }
+            WM_DPICHANGED => {
+                let new_rect = lparam as *const RECT;
+                if !new_rect.is_null() {
+                    let r = *new_rect;
+                    SetWindowPos(
+                        hwnd,
+                        0 as HWND,
+                        r.left,
+                        r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+                update_tray_icon(hwnd);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+                0
+            }
             WM_ACTIVATE => {
                 let activation = (wparam & 0xFFFF) as u32;
                 if activation == 0 /* WA_INACTIVE */ {
@@ -3040,8 +3036,11 @@ mod win_gui {
                 tme.hwndTrack = hwnd;
                 TrackMouseEvent(&mut tme);
 
-                let x = (lparam & 0xFFFF) as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                let raw_x = (lparam & 0xFFFF) as i32;
+                let raw_y = ((lparam >> 16) & 0xFFFF) as i32;
+                let dpi = GetDpiForWindow(hwnd).max(96);
+                let x = unscale_dpi(raw_x, dpi);
+                let y = unscale_dpi(raw_y, dpi);
 
                 let mut new_btn = None;
                 let mut new_row = None;
@@ -3149,7 +3148,9 @@ mod win_gui {
                 0
             }
             WM_RBUTTONUP => {
-                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                let raw_y = ((lparam >> 16) & 0xFFFF) as i32;
+                let dpi = GetDpiForWindow(hwnd).max(96);
+                let y = unscale_dpi(raw_y, dpi);
                 if y >= 175 && y <= 175 + (VISIBLE_ROWS as i32 * ROW_HEIGHT) {
                     let visible_idx = ((y - 175) / ROW_HEIGHT) as usize;
                     let scroll = {
@@ -3163,8 +3164,11 @@ mod win_gui {
                 0
             }
             WM_LBUTTONUP => {
-                let x = (lparam & 0xFFFF) as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                let raw_x = (lparam & 0xFFFF) as i32;
+                let raw_y = ((lparam >> 16) & 0xFFFF) as i32;
+                let dpi = GetDpiForWindow(hwnd).max(96);
+                let x = unscale_dpi(raw_x, dpi);
+                let y = unscale_dpi(raw_y, dpi);
 
                 let show_sort = STATE
                     .lock()
@@ -3311,6 +3315,7 @@ mod win_gui {
 
     pub fn run_gui() {
         unsafe {
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED as u32);
         }
         let h_instance = unsafe { GetModuleHandleW(std::ptr::null()) };
@@ -3335,6 +3340,10 @@ mod win_gui {
             RegisterClassExW(&wc);
         }
 
+        let dpi = unsafe { GetDpiForSystem().max(96) };
+        let win_w = scale_dpi(WINDOW_WIDTH, dpi);
+        let win_h = scale_dpi(WINDOW_HEIGHT, dpi);
+
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -3343,8 +3352,8 @@ mod win_gui {
                 WS_POPUP,
                 100,
                 100,
-                WINDOW_WIDTH,
-                WINDOW_HEIGHT,
+                win_w,
+                win_h,
                 0 as HWND,
                 0 as HMENU,
                 h_instance,
@@ -3447,5 +3456,10 @@ mod win_gui {
 
 #[cfg(windows)]
 fn main() {
+    unsafe {
+        windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
     win_gui::run_gui();
 }
