@@ -55,7 +55,7 @@
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <TextBlock Text="Task Cleaner" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
                     <Border CornerRadius="8" Background="#140078D4" BorderBrush="#200078D4" BorderThickness="1" Padding="6,1">
-                        <TextBlock Text="{x:Bind ViewModel.TotalRunning, Mode=OneWay, Converter={StaticResource StringFormatConverter}, ConverterParameter='{}{0} 运行中'}" 
+                        <TextBlock Text="{x:Bind ViewModel.RunningBadgeText, Mode=OneWay}" 
                                    FontSize="10.5" Foreground="#0078D4" FontWeight="Medium" />
                     </Border>
                 </StackPanel>
@@ -71,7 +71,7 @@
             <Border Grid.Row="1" Margin="0,8,0,0" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" Padding="10">
                 <Grid ColumnDefinitions="*,Auto">
                     <StackPanel Spacing="2" VerticalAlignment="Center">
-                        <TextBlock Text="{x:Bind ViewModel.TargetCount, Mode=OneWay, Converter={StaticResource StringFormatConverter}, ConverterParameter='{}{0} 个待结束应用'}" 
+                        <TextBlock Text="{x:Bind ViewModel.TargetBadgeText, Mode=OneWay}" 
                                    FontWeight="SemiBold" FontSize="12" />
                         <TextBlock Text="结束未受保护的前台任务" FontSize="10.5" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>

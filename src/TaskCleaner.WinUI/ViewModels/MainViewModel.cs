@@ -43,6 +43,9 @@ namespace TaskCleaner.WinUI.ViewModels
         public int ProtectedCount => Summary?.ProtectedCount ?? 0;
         public bool HasTargets => TargetCount > 0;
 
+        public string RunningBadgeText => $"{TotalRunning} 运行中";
+        public string TargetBadgeText => $"{TargetCount} 个待结束应用";
+
         public string ActionButtonText => HasTargets
             ? $"结束 ({TargetCount})"
             : "无需清理";
@@ -84,6 +87,8 @@ namespace TaskCleaner.WinUI.ViewModels
             OnPropertyChanged(nameof(TargetCount));
             OnPropertyChanged(nameof(ProtectedCount));
             OnPropertyChanged(nameof(HasTargets));
+            OnPropertyChanged(nameof(RunningBadgeText));
+            OnPropertyChanged(nameof(TargetBadgeText));
             OnPropertyChanged(nameof(ActionButtonText));
 
             UpdateDisplayedProcesses();
