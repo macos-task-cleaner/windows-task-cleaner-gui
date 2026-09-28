@@ -53,8 +53,8 @@ mod win_gui {
         OpenProcess, TerminateProcess, PROCESS_TERMINATE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, TrackMouseEvent, UnregisterHotKey, MOD_ALT, MOD_CONTROL, TME_LEAVE,
-        TRACKMOUSEEVENT,
+        EnableWindow, GetKeyState, RegisterHotKey, TrackMouseEvent, UnregisterHotKey, MOD_ALT,
+        MOD_CONTROL, MOD_SHIFT, MOD_WIN, TME_LEAVE, TRACKMOUSEEVENT,
     };
     use windows_sys::Win32::UI::Shell::{
         ExtractIconExW, ShellExecuteExW, ShellExecuteW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON,
@@ -62,16 +62,17 @@ mod win_gui {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyIcon, DestroyMenu, DispatchMessageW, DrawIconEx, GetCursorPos, GetMessageW,
-        GetSystemMetrics, KillTimer, LoadCursorW, MessageBoxW, PostQuitMessage, RegisterClassExW,
-        SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW,
-        TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST,
-        ICONINFO, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MB_TOPMOST, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
-        MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
-        SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN,
-        WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONUP, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_POPUP,
+        DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, GetClientRect,
+        GetCursorPos, GetMessageW, GetSystemMetrics, IsWindow, KillTimer, LoadCursorW, MessageBoxW,
+        PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+        SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON,
+        HMENU, HWND_TOPMOST, ICONINFO, IDC_ARROW, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+        MB_TOPMOST, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
+        SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_BOTTOMALIGN,
+        TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY,
+        WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+        WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_CAPTION,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
@@ -126,6 +127,58 @@ mod win_gui {
     const IDM_CLI_REVEAL: usize = 1422;
     const IDM_CLI_UNINSTALL: usize = 1423;
 
+    // 全局快捷键管理 ID
+    const IDM_HOTKEY_TOGGLE_ENABLE: usize = 1430;
+    const IDM_HOTKEY_CUSTOM_RECORDER: usize = 1431;
+    const IDM_HOTKEY_PRESET_BASE: usize = 1440;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ShortcutPreset {
+        pub name: &'static str,
+        pub modifiers: u32,
+        pub vk: u32,
+        pub display: &'static str,
+    }
+
+    const PRESETS: &[ShortcutPreset] = &[
+        ShortcutPreset {
+            name: "CtrlAltK",
+            modifiers: 0x0002 | 0x0001, // MOD_CONTROL | MOD_ALT
+            vk: 0x4B,                   // 'K'
+            display: "Ctrl + Alt + K (默认)",
+        },
+        ShortcutPreset {
+            name: "CtrlShiftK",
+            modifiers: 0x0002 | 0x0004, // MOD_CONTROL | MOD_SHIFT
+            vk: 0x4B,                   // 'K'
+            display: "Ctrl + Shift + K",
+        },
+        ShortcutPreset {
+            name: "AltShiftK",
+            modifiers: 0x0001 | 0x0004, // MOD_ALT | MOD_SHIFT
+            vk: 0x4B,                   // 'K'
+            display: "Alt + Shift + K",
+        },
+        ShortcutPreset {
+            name: "CtrlAltX",
+            modifiers: 0x0002 | 0x0001, // MOD_CONTROL | MOD_ALT
+            vk: 0x58,                   // 'X'
+            display: "Ctrl + Alt + X",
+        },
+        ShortcutPreset {
+            name: "WinAltK",
+            modifiers: 0x0008 | 0x0001, // MOD_WIN | MOD_ALT
+            vk: 0x4B,                   // 'K'
+            display: "Win + Alt + K",
+        },
+        ShortcutPreset {
+            name: "WinShiftK",
+            modifiers: 0x0008 | 0x0004, // MOD_WIN | MOD_SHIFT
+            vk: 0x4B,                   // 'K'
+            display: "Win + Shift + K",
+        },
+    ];
+
     // 语言切换菜单基址 (支持 24 种语言 + 自动)
     const IDM_LANG_AUTO: usize = 1500;
     const IDM_LANG_BASE: usize = 1501;
@@ -173,6 +226,40 @@ mod win_gui {
     static IS_VISIBLE: AtomicBool = AtomicBool::new(false);
     static IS_MENU_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+    /// 全局快捷键持久化配置
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct HotkeyConfig {
+        #[serde(default = "default_true")]
+        pub enabled: bool,
+        #[serde(default = "default_hotkey_modifiers")]
+        pub modifiers: u32,
+        #[serde(default = "default_hotkey_vk")]
+        pub vk: u32,
+        #[serde(default = "default_hotkey_display")]
+        pub display: String,
+    }
+
+    fn default_hotkey_modifiers() -> u32 {
+        0x0002 /* MOD_CONTROL */ | 0x0001 /* MOD_ALT */
+    }
+    fn default_hotkey_vk() -> u32 {
+        0x4B // 'K'
+    }
+    fn default_hotkey_display() -> String {
+        "Ctrl + Alt + K".to_string()
+    }
+
+    impl Default for HotkeyConfig {
+        fn default() -> Self {
+            Self {
+                enabled: true,
+                modifiers: default_hotkey_modifiers(),
+                vk: default_hotkey_vk(),
+                display: default_hotkey_display(),
+            }
+        }
+    }
+
     /// GUI 持久化偏好设置
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct GuiPreferences {
@@ -186,6 +273,8 @@ mod win_gui {
         pub show_app_identifier: bool,
         #[serde(default = "default_true")]
         pub show_sort_button: bool,
+        #[serde(default)]
+        pub hotkey: HotkeyConfig,
     }
 
     fn default_sort_mode() -> SortMode {
@@ -206,6 +295,7 @@ mod win_gui {
                 show_detailed_metrics: true,
                 show_app_identifier: false,
                 show_sort_button: true,
+                hotkey: HotkeyConfig::default(),
             }
         }
     }
@@ -866,6 +956,393 @@ mod win_gui {
         }
     }
 
+    /// 将修饰键掩码与虚拟键码格式化为直观文本 (如 Ctrl + Alt + K)
+    fn format_hotkey_string(mods: u32, vk: u32) -> String {
+        let mut parts = Vec::new();
+        if (mods & 0x0002 /* MOD_CONTROL */) != 0 {
+            parts.push("Ctrl");
+        }
+        if (mods & 0x0008 /* MOD_WIN */) != 0 {
+            parts.push("Win");
+        }
+        if (mods & 0x0001 /* MOD_ALT */) != 0 {
+            parts.push("Alt");
+        }
+        if (mods & 0x0004 /* MOD_SHIFT */) != 0 {
+            parts.push("Shift");
+        }
+        let key_name = match vk {
+            0x30..=0x39 => format!("{}", (vk as u8) as char),
+            0x41..=0x5A => format!("{}", (vk as u8) as char),
+            0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
+            0x20 => "Space".to_string(),
+            0x09 => "Tab".to_string(),
+            0xC0 => "`".to_string(),
+            0xBD => "-".to_string(),
+            0xBB => "=".to_string(),
+            0xDB => "[".to_string(),
+            0xDD => "]".to_string(),
+            0xDC => "\\".to_string(),
+            0xBA => ";".to_string(),
+            0xDE => "'".to_string(),
+            0xBC => ",".to_string(),
+            0xBE => ".".to_string(),
+            0xBF => "/".to_string(),
+            _ => format!("Key(0x{:X})", vk),
+        };
+        parts.push(&key_name);
+        parts.join(" + ")
+    }
+
+    /// 动态应用并向 Windows 系统注册/反注册全局快捷键
+    fn apply_hotkey(hwnd: HWND, cfg: &HotkeyConfig) -> bool {
+        unsafe {
+            UnregisterHotKey(hwnd, HOTKEY_TOGGLE_ID);
+            if cfg.enabled && cfg.vk > 0 {
+                RegisterHotKey(hwnd, HOTKEY_TOGGLE_ID, cfg.modifiers, cfg.vk) != 0
+            } else {
+                true
+            }
+        }
+    }
+
+    struct RecorderData {
+        parent_hwnd: HWND,
+        mods: u32,
+        vk: u32,
+        display: String,
+    }
+
+    static RECORDER_STATE: Mutex<Option<RecorderData>> = Mutex::new(None);
+    static RECORDER_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+    /// 原生快捷键实时录制窗口过程
+    unsafe extern "system" fn recorder_wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_ERASEBKGND => 1,
+            WM_PAINT => {
+                let mut ps: PAINTSTRUCT = std::mem::zeroed();
+                let hdc = BeginPaint(hwnd, &mut ps);
+
+                let mut rc: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rc);
+
+                // 背景
+                let bg_brush = CreateSolidBrush(rgb(28, 28, 32));
+                FillRect(hdc, &rc, bg_brush);
+                DeleteObject(bg_brush);
+
+                SetBkMode(hdc, TRANSPARENT as i32);
+
+                // 标题
+                SetTextColor(hdc, rgb(255, 255, 255));
+                let title_font = create_font(15, FW_BOLD);
+                let old_font = SelectObject(hdc, title_font);
+                let mut tr = RECT { left: 24, top: 14, right: rc.right - 24, bottom: 36 };
+                let title_txt = to_wstring("录制全局快捷键");
+                DrawTextW(hdc, title_txt.as_ptr(), -1, &mut tr, DT_LEFT | DT_SINGLELINE);
+
+                // 副标题提示
+                let sub_font = create_font(12, FW_NORMAL);
+                SelectObject(hdc, sub_font);
+                SetTextColor(hdc, rgb(156, 163, 175));
+                let mut sr = RECT { left: 24, top: 38, right: rc.right - 24, bottom: 58 };
+                let sub_txt = to_wstring("请在键盘上按下组合键 (需含 Ctrl / Alt / Shift / Win)");
+                DrawTextW(hdc, sub_txt.as_ptr(), -1, &mut sr, DT_LEFT | DT_SINGLELINE);
+                DeleteObject(sub_font);
+
+                // 按键展示框 (居中圆角卡片)
+                let box_rect = RECT { left: 24, top: 66, right: rc.right - 24, bottom: 114 };
+                let box_brush = CreateSolidBrush(rgb(40, 40, 46));
+                let box_pen = CreatePen(PS_SOLID as i32, 1, rgb(0, 120, 215));
+                let old_pen = SelectObject(hdc, box_pen);
+                let old_brush = SelectObject(hdc, box_brush);
+                RoundRect(hdc, box_rect.left, box_rect.top, box_rect.right, box_rect.bottom, 8, 8);
+                SelectObject(hdc, old_brush);
+                SelectObject(hdc, old_pen);
+                DeleteObject(box_brush);
+                DeleteObject(box_pen);
+
+                let disp_text = {
+                    let guard = RECORDER_STATE.lock().unwrap();
+                    guard.as_ref().map(|d| d.display.clone()).unwrap_or_else(|| "按下快捷键...".to_string())
+                };
+                let key_font = create_font(16, FW_BOLD);
+                SelectObject(hdc, key_font);
+                SetTextColor(hdc, rgb(255, 255, 255));
+                let mut kr = box_rect;
+                let wide_disp = to_wstring(&disp_text);
+                DrawTextW(hdc, wide_disp.as_ptr(), -1, &mut kr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DeleteObject(key_font);
+
+                // 底部三按钮
+                let btn_font = create_font(13, FW_SEMIBOLD);
+                SelectObject(hdc, btn_font);
+
+                let draw_btn = |hdc: HDC, rect: RECT, text: &str, bg_color: COLORREF, text_color: COLORREF| {
+                    let b_brush = CreateSolidBrush(bg_color);
+                    let p_pen = CreatePen(PS_SOLID as i32, 1, bg_color);
+                    let o_p = SelectObject(hdc, p_pen);
+                    let o_b = SelectObject(hdc, b_brush);
+                    RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 6, 6);
+                    SelectObject(hdc, o_b);
+                    SelectObject(hdc, o_p);
+                    DeleteObject(b_brush);
+                    DeleteObject(p_pen);
+
+                    SetTextColor(hdc, text_color);
+                    let mut r = rect;
+                    let wt = to_wstring(text);
+                    DrawTextW(hdc, wt.as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                };
+
+                let btn_y = 126;
+                let btn_h = 32;
+                let btn_w = 98;
+                let btn_save = RECT { left: 24, top: btn_y, right: 24 + btn_w, bottom: btn_y + btn_h };
+                let btn_reset = RECT { left: 132, top: btn_y, right: 132 + btn_w, bottom: btn_y + btn_h };
+                let btn_cancel = RECT { left: 240, top: btn_y, right: 240 + btn_w, bottom: btn_y + btn_h };
+
+                draw_btn(hdc, btn_save, "保存生效", rgb(0, 120, 215), rgb(255, 255, 255));
+                draw_btn(hdc, btn_reset, "恢复默认", rgb(52, 52, 58), rgb(220, 220, 225));
+                draw_btn(hdc, btn_cancel, "取消", rgb(52, 52, 58), rgb(220, 220, 225));
+
+                SelectObject(hdc, old_font);
+                DeleteObject(title_font);
+                DeleteObject(btn_font);
+
+                EndPaint(hwnd, &ps);
+                0
+            }
+            WM_SYSKEYDOWN | WM_KEYDOWN => {
+                let vk = wparam as u32;
+                if vk == 27 /* VK_ESCAPE */ {
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                if vk == 13 /* VK_RETURN */ {
+                    save_recorded_hotkey(hwnd);
+                    return 0;
+                }
+
+                let is_modifier = matches!(vk, 16 | 17 | 18 | 91 | 92);
+                let ctrl = (GetKeyState(17) as u16 & 0x8000) != 0;
+                let alt = (GetKeyState(18) as u16 & 0x8000) != 0;
+                let shift = (GetKeyState(16) as u16 & 0x8000) != 0;
+                let win = ((GetKeyState(91) as u16 & 0x8000) != 0) || ((GetKeyState(92) as u16 & 0x8000) != 0);
+
+                let mut mods = 0u32;
+                if ctrl { mods |= MOD_CONTROL; }
+                if alt { mods |= MOD_ALT; }
+                if shift { mods |= MOD_SHIFT; }
+                if win { mods |= MOD_WIN; }
+
+                if !is_modifier && mods > 0 {
+                    let display = format_hotkey_string(mods, vk);
+                    let mut guard = RECORDER_STATE.lock().unwrap();
+                    if let Some(data) = guard.as_mut() {
+                        data.mods = mods;
+                        data.vk = vk;
+                        data.display = display;
+                    }
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                } else if is_modifier && mods > 0 {
+                    let mut parts = Vec::new();
+                    if ctrl { parts.push("Ctrl"); }
+                    if win { parts.push("Win"); }
+                    if alt { parts.push("Alt"); }
+                    if shift { parts.push("Shift"); }
+                    parts.push("...");
+                    let display = parts.join(" + ");
+                    let mut guard = RECORDER_STATE.lock().unwrap();
+                    if let Some(data) = guard.as_mut() {
+                        data.display = display;
+                    }
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
+                0
+            }
+            WM_SYSKEYUP | WM_KEYUP => 0,
+            WM_LBUTTONUP => {
+                let x = (lparam & 0xFFFF) as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                if y >= 126 && y <= 158 {
+                    if x >= 24 && x <= 122 {
+                        save_recorded_hotkey(hwnd);
+                        return 0;
+                    } else if x >= 132 && x <= 230 {
+                        let mut guard = RECORDER_STATE.lock().unwrap();
+                        if let Some(data) = guard.as_mut() {
+                            data.mods = MOD_CONTROL | MOD_ALT;
+                            data.vk = 0x4B; // 'K'
+                            data.display = "Ctrl + Alt + K".to_string();
+                        }
+                        drop(guard);
+                        save_recorded_hotkey(hwnd);
+                        return 0;
+                    } else if x >= 240 && x <= 338 {
+                        DestroyWindow(hwnd);
+                        return 0;
+                    }
+                }
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    unsafe fn save_recorded_hotkey(hwnd: HWND) {
+        let (parent_hwnd, mods, vk, display) = {
+            let guard = RECORDER_STATE.lock().unwrap();
+            match guard.as_ref() {
+                Some(d) => (d.parent_hwnd, d.mods, d.vk, d.display.clone()),
+                None => return,
+            }
+        };
+
+        if mods == 0 || vk == 0 || display.ends_with("...") {
+            MessageBoxW(
+                hwnd,
+                to_wstring("请在键盘上按下完整的快捷键组合 (需包含修饰键与触发键)！").as_ptr(),
+                to_wstring("提示").as_ptr(),
+                MB_OK | MB_ICONWARNING | MB_TOPMOST,
+            );
+            return;
+        }
+
+        let ok = apply_hotkey(parent_hwnd, &HotkeyConfig {
+            enabled: true,
+            modifiers: mods,
+            vk,
+            display: display.clone(),
+        });
+
+        if !ok {
+            let old_cfg = {
+                let state_guard = STATE.lock().unwrap();
+                state_guard
+                    .as_ref()
+                    .map(|s| s.prefs.hotkey.clone())
+                    .unwrap_or_default()
+            };
+            apply_hotkey(parent_hwnd, &old_cfg);
+
+            MessageBoxW(
+                hwnd,
+                to_wstring(&format!("快捷键「{}」已被系统或其他正在运行的软件占用，请尝试其他组合！", display)).as_ptr(),
+                to_wstring("快捷键冲突").as_ptr(),
+                MB_OK | MB_ICONWARNING | MB_TOPMOST,
+            );
+            return;
+        }
+
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.prefs.hotkey.enabled = true;
+                state.prefs.hotkey.modifiers = mods;
+                state.prefs.hotkey.vk = vk;
+                state.prefs.hotkey.display = display.clone();
+                state.prefs.save();
+                state.status_message = Some(format!("全局快捷键已更新为: {}", display));
+                state.status_timestamp = Some(Instant::now());
+            }
+        }
+
+        DestroyWindow(hwnd);
+    }
+
+    unsafe fn show_shortcut_recorder_dialog(parent_hwnd: HWND) {
+        let cur_hk = {
+            let state_guard = STATE.lock().unwrap();
+            state_guard
+                .as_ref()
+                .map(|s| s.prefs.hotkey.clone())
+                .unwrap_or_default()
+        };
+
+        {
+            let mut guard = RECORDER_STATE.lock().unwrap();
+            *guard = Some(RecorderData {
+                parent_hwnd,
+                mods: cur_hk.modifiers,
+                vk: cur_hk.vk,
+                display: cur_hk.display.clone(),
+            });
+        }
+
+        let h_instance = GetModuleHandleW(std::ptr::null());
+        let class_name = to_wstring("TaskCleanerShortcutRecorder");
+
+        if !RECORDER_CLASS_REGISTERED.load(Ordering::SeqCst) {
+            let wc = WNDCLASSEXW {
+                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                style: CS_DROPSHADOW,
+                lpfnWndProc: Some(recorder_wndproc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: h_instance,
+                hIcon: 0 as HICON,
+                hCursor: LoadCursorW(0 as HINSTANCE, IDC_ARROW),
+                hbrBackground: 0 as HBRUSH,
+                lpszMenuName: std::ptr::null(),
+                lpszClassName: class_name.as_ptr(),
+                hIconSm: 0 as HICON,
+            };
+            RegisterClassExW(&wc);
+            RECORDER_CLASS_REGISTERED.store(true, Ordering::SeqCst);
+        }
+
+        let screen_w = GetSystemMetrics(0 /* SM_CXSCREEN */);
+        let screen_h = GetSystemMetrics(1 /* SM_CYSCREEN */);
+        let dlg_w = 380;
+        let dlg_h = 210;
+        let x = (screen_w - dlg_w) / 2;
+        let y = (screen_h - dlg_h) / 2;
+
+        let dlg_hwnd = CreateWindowExW(
+            WS_EX_TOPMOST,
+            class_name.as_ptr(),
+            to_wstring("录制全局快捷键 - Task Cleaner").as_ptr(),
+            WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            x,
+            y,
+            dlg_w,
+            dlg_h,
+            parent_hwnd,
+            0 as HMENU,
+            h_instance,
+            std::ptr::null(),
+        );
+
+        let corner_preference = DWMWCP_ROUND;
+        DwmSetWindowAttribute(
+            dlg_hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner_preference as *const _ as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        EnableWindow(parent_hwnd, 0);
+        ShowWindow(dlg_hwnd, SW_SHOW);
+        SetForegroundWindow(dlg_hwnd);
+
+        let mut msg: MSG = std::mem::zeroed();
+        while IsWindow(dlg_hwnd) != 0 && GetMessageW(&mut msg, 0 as HWND, 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+
+        EnableWindow(parent_hwnd, 1);
+        SetForegroundWindow(parent_hwnd);
+        InvalidateRect(parent_hwnd, std::ptr::null(), 1);
+    }
+
     unsafe fn show_tray_context_menu(hwnd: HWND) {
         let lang = STATE.lock().unwrap().as_ref().map(|s| s.active_language).unwrap_or(Language::En);
         let mut pt: POINT = std::mem::zeroed();
@@ -1227,8 +1704,34 @@ mod win_gui {
         let autostart_flags = MF_STRING | if autostart_on { MF_CHECKED } else { 0 };
         AppendMenuW(menu, autostart_flags, IDM_CFG_STARTUP, to_wstring(&autostart_label).as_ptr());
 
-        let shortcut_label = format!("{}: Ctrl + Alt + K", tr(I18nKey::MenuGlobalShortcut, lang));
-        AppendMenuW(menu, MF_STRING, 0, to_wstring(&shortcut_label).as_ptr());
+        // 全局快捷键动态管理子菜单
+        let hk_menu: HMENU = CreatePopupMenu();
+        let hk_enabled = prefs.hotkey.enabled;
+        let hk_toggle_title = if hk_enabled {
+            "启用全局快捷键 [已开启 √]"
+        } else {
+            "启用全局快捷键 [已关闭]"
+        };
+        let hk_toggle_flags = MF_STRING | if hk_enabled { MF_CHECKED } else { 0 };
+        AppendMenuW(hk_menu, hk_toggle_flags, IDM_HOTKEY_TOGGLE_ENABLE, to_wstring(hk_toggle_title).as_ptr());
+        AppendMenuW(hk_menu, MF_SEPARATOR, 0, std::ptr::null());
+
+        for (i, p) in PRESETS.iter().enumerate() {
+            let is_matched = hk_enabled && prefs.hotkey.modifiers == p.modifiers && prefs.hotkey.vk == p.vk;
+            let flags = MF_STRING | if is_matched { MF_CHECKED } else { 0 };
+            AppendMenuW(hk_menu, flags, IDM_HOTKEY_PRESET_BASE + i, to_wstring(p.display).as_ptr());
+        }
+
+        AppendMenuW(hk_menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(hk_menu, MF_STRING, IDM_HOTKEY_CUSTOM_RECORDER, to_wstring("自定义快捷键录制...").as_ptr());
+
+        let cur_hk_summary = if hk_enabled {
+            prefs.hotkey.display.as_str()
+        } else {
+            "已禁用"
+        };
+        let shortcut_title = format!("{}: {}", tr(I18nKey::MenuGlobalShortcut, lang), cur_hk_summary);
+        AppendMenuW(menu, MF_POPUP, hk_menu as usize, to_wstring(&shortcut_title).as_ptr());
 
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
 
@@ -1340,12 +1843,88 @@ mod win_gui {
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
+            IDM_HOTKEY_TOGGLE_ENABLE => {
+                let (new_enabled, cfg) = {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.prefs.hotkey.enabled = !state.prefs.hotkey.enabled;
+                        let enabled = state.prefs.hotkey.enabled;
+                        let cfg = state.prefs.hotkey.clone();
+                        state.prefs.save();
+                        (enabled, cfg)
+                    } else {
+                        (false, HotkeyConfig::default())
+                    }
+                };
+                apply_hotkey(hwnd, &cfg);
+                let status = if new_enabled {
+                    format!("全局快捷键已开启: {}", cfg.display)
+                } else {
+                    "全局快捷键已关闭".to_string()
+                };
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some(status);
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_HOTKEY_CUSTOM_RECORDER => {
+                show_shortcut_recorder_dialog(hwnd);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            cmd if (IDM_HOTKEY_PRESET_BASE..IDM_HOTKEY_PRESET_BASE + PRESETS.len()).contains(&(cmd as usize)) => {
+                let idx = (cmd as usize) - IDM_HOTKEY_PRESET_BASE;
+                let preset = &PRESETS[idx];
+                let new_cfg = HotkeyConfig {
+                    enabled: true,
+                    modifiers: preset.modifiers,
+                    vk: preset.vk,
+                    display: match preset.name {
+                        "CtrlAltK" => "Ctrl + Alt + K".to_string(),
+                        "CtrlShiftK" => "Ctrl + Shift + K".to_string(),
+                        "AltShiftK" => "Alt + Shift + K".to_string(),
+                        "CtrlAltX" => "Ctrl + Alt + X".to_string(),
+                        "WinAltK" => "Win + Alt + K".to_string(),
+                        "WinShiftK" => "Win + Shift + K".to_string(),
+                        _ => preset.display.to_string(),
+                    },
+                };
+                let ok = apply_hotkey(hwnd, &new_cfg);
+                if ok {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.prefs.hotkey = new_cfg.clone();
+                        state.prefs.save();
+                        state.status_message = Some(format!("快捷键已设为: {}", new_cfg.display));
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                } else {
+                    let old_cfg = {
+                        let state_guard = STATE.lock().unwrap();
+                        state_guard.as_ref().map(|s| s.prefs.hotkey.clone()).unwrap_or_default()
+                    };
+                    apply_hotkey(hwnd, &old_cfg);
+                    MessageBoxW(
+                        hwnd,
+                        to_wstring(&format!("快捷键「{}」已被系统或其他正在运行的软件占用，请选择其他预设或自定义录制！", new_cfg.display)).as_ptr(),
+                        to_wstring("快捷键冲突").as_ptr(),
+                        MB_OK | MB_ICONWARNING | MB_TOPMOST,
+                    );
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
             IDM_CFG_RELOAD => {
+                let fresh_prefs = GuiPreferences::load();
+                apply_hotkey(hwnd, &fresh_prefs.hotkey);
                 {
                     let mut state_guard = STATE.lock().unwrap();
                     if let Some(state) = state_guard.as_mut() {
                         state.whitelist = WhitelistManager::new();
-                        state.status_message = Some("白名单规则已重新加载".to_string());
+                        state.prefs = fresh_prefs;
+                        state.status_message = Some("配置与白名单规则已重新加载".to_string());
                         state.status_timestamp = Some(Instant::now());
                     }
                 }
@@ -1486,8 +2065,21 @@ mod win_gui {
                 ShellExecuteW(0 as HWND, wverb.as_ptr(), wurl.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
             }
             IDM_CFG_ABOUT => {
+                let cur_shortcut = {
+                    let state_guard = STATE.lock().unwrap();
+                    state_guard
+                        .as_ref()
+                        .map(|s| {
+                            if s.prefs.hotkey.enabled {
+                                s.prefs.hotkey.display.clone()
+                            } else {
+                                "已禁用".to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "Ctrl + Alt + K".to_string())
+                };
                 let caption = to_wstring("Task Cleaner");
-                let msg = to_wstring("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n快捷键: Ctrl + Alt + K 呼出/隐藏\n\n轻量优雅的一体化前台任务管理、白名单保护与内存工作集深度释放套件。\n100% 独立原生 Rust 二进制，零外部重型依赖。");
+                let msg = to_wstring(&format!("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n快捷键: {} 呼出/隐藏\n\n轻量优雅的一体化前台任务管理、白名单保护与内存工作集深度释放套件。\n100% 独立原生 Rust 二进制，零外部重型依赖。", cur_shortcut));
                 MessageBoxW(
                     hwnd,
                     msg.as_ptr(),
@@ -2616,11 +3208,6 @@ mod win_gui {
             )
         };
 
-        // 注册全局快捷键 (Ctrl + Alt + K 呼出/隐藏面板)
-        unsafe {
-            RegisterHotKey(hwnd, HOTKEY_TOGGLE_ID, MOD_CONTROL | MOD_ALT, 0x4B /* 'K' */);
-        }
-
         // 启用 Windows 11 原生圆角 (DWMWCP_ROUND)
         let corner_preference = DWMWCP_ROUND;
         unsafe {
@@ -2656,6 +3243,7 @@ mod win_gui {
         }
 
         let prefs = GuiPreferences::load();
+        apply_hotkey(hwnd, &prefs.hotkey);
         let active_lang = prefs.language_pref.resolved_language();
 
         {
