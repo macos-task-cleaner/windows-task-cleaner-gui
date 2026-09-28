@@ -75,14 +75,14 @@ if ($Mode -eq "cli" -or $Mode -eq "mtc") {
     $binName = "mtc"
 }
 
-Write-Host "[INFO] Compiling $binName ($configName)..."
+Write-Host "[INFO] Compiling Task Cleaner Workspace ($configName)..."
 if ($binName -eq "TaskCleaner") {
     Get-Process -Name "TaskCleaner" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 if ($configArg) {
-    cargo build --bin $binName --release
+    cargo build --workspace --release
 } else {
-    cargo build --bin $binName
+    cargo build --workspace
 }
 
 if ($LASTEXITCODE -ne 0) {
@@ -100,22 +100,29 @@ if ($env:CARGO_TARGET_DIR) {
     $targetBase = $env:CARGO_TARGET_DIR
 }
 $exePath = Join-Path $targetBase "$subDir\$binName.exe"
+$mtcExePath = Join-Path $targetBase "$subDir\mtc.exe"
+$guiExePath = Join-Path $targetBase "$subDir\TaskCleaner.exe"
 
 if (-not (Test-Path $exePath)) {
     Write-Host "[ERROR] Compiled executable not found at: $exePath" -ForegroundColor Red
     exit 1
 }
 
-# Sync final binary to workspace target directory so it is visible in Y:\ and host Mac
+# Sync final binaries to workspace target directory so both are visible in Y:\ and host Mac
 $workspaceTargetDir = Join-Path $projectRoot "target\$subDir"
 if (-not (Test-Path $workspaceTargetDir)) {
     New-Item -ItemType Directory -Path $workspaceTargetDir -Force | Out-Null
 }
 try {
-    Copy-Item -Path $exePath -Destination (Join-Path $workspaceTargetDir "$binName.exe") -Force
+    if (Test-Path $guiExePath) {
+        Copy-Item -Path $guiExePath -Destination (Join-Path $workspaceTargetDir "TaskCleaner.exe") -Force
+    }
+    if (Test-Path $mtcExePath) {
+        Copy-Item -Path $mtcExePath -Destination (Join-Path $workspaceTargetDir "mtc.exe") -Force
+    }
 } catch {}
 
-Write-Host "[SUCCESS] Executable ready at:" -ForegroundColor Green
+Write-Host "[SUCCESS] Executables ready at:" -ForegroundColor Green
 Write-Host "  * VM Local:      $exePath" -ForegroundColor Green
 Write-Host "  * Project Share: $(Join-Path $workspaceTargetDir "$binName.exe")" -ForegroundColor Green
 if ($binName -eq "mtc") {

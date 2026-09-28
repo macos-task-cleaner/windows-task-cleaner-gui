@@ -17,12 +17,13 @@ mod win_gui {
 
     use serde::{Deserialize, Serialize};
     use task_cleaner_core::{
-        detect_system_language, get_caller_lineage, purge_process_working_set, scan_foreground_apps,
-        sort_targets, tiered_terminate, tr, AppTarget, I18nKey, Language, LanguagePreference,
-        SortMode, TerminationMode, WhitelistManager, WhitelistMatch,
+        detect_system_language, get_caller_lineage, is_explorer, purge_process_working_set,
+        scan_foreground_apps, sort_protected, sort_targets, tiered_terminate, tr, AppTarget,
+        I18nKey, Language, LanguagePreference, SortMode, TerminationMode, WhitelistManager,
+        WhitelistMatch,
     };
     use windows_sys::Win32::Foundation::{
-        COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+        CloseHandle, COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -36,6 +37,7 @@ mod win_gui {
         FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
         PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
     };
+    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
@@ -47,13 +49,16 @@ mod win_gui {
         RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
         HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WRITE, REG_SZ,
     };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+    };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, TrackMouseEvent, UnregisterHotKey, MOD_ALT, MOD_CONTROL, TME_LEAVE,
         TRACKMOUSEEVENT,
     };
     use windows_sys::Win32::UI::Shell::{
-        ExtractIconExW, ShellExecuteExW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
-        NIF_TIP, NIM_ADD, NIM_DELETE, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+        ExtractIconExW, ShellExecuteExW, ShellExecuteW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON,
+        NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -63,9 +68,10 @@ mod win_gui {
         TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST,
         ICONINFO, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
         MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE,
-        WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-        WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN,
+        WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONUP, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
@@ -232,21 +238,46 @@ mod win_gui {
         fn candidate_user_dirs() -> Vec<PathBuf> {
             let mut dirs = Vec::new();
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                dirs.push(PathBuf::from(local_app_data).join("Microsoft").join("WindowsApps"));
+                dirs.push(PathBuf::from(&local_app_data).join("Microsoft").join("WindowsApps"));
+                dirs.push(PathBuf::from(&local_app_data).join("TaskCleaner").join("bin"));
             }
             if let Ok(user_profile) = std::env::var("USERPROFILE") {
-                dirs.push(PathBuf::from(user_profile).join(".local").join("bin"));
+                dirs.push(PathBuf::from(&user_profile).join(".local").join("bin"));
             }
             dirs
         }
 
         fn get_bundled_cli_path() -> Option<PathBuf> {
+            // 1. 同级目录查找 (发布打包与常规运行环境)
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(parent) = exe.parent() {
                     let candidate = parent.join("mtc.exe");
                     if candidate.exists() {
                         return Some(candidate);
                     }
+                }
+            }
+            // 2. 当前工作区 target 编译目录
+            if let Ok(cwd) = std::env::current_dir() {
+                let candidates = [
+                    cwd.join("mtc.exe"),
+                    cwd.join("target").join("debug").join("mtc.exe"),
+                    cwd.join("target").join("release").join("mtc.exe"),
+                ];
+                for c in &candidates {
+                    if c.exists() {
+                        return Some(c.clone());
+                    }
+                }
+            }
+            // 3. 虚拟机开发高 IO 缓存目录 (C:\Temp\taskcleaner-target)
+            let temp_candidates = [
+                PathBuf::from(r"C:\Temp\taskcleaner-target\debug\mtc.exe"),
+                PathBuf::from(r"C:\Temp\taskcleaner-target\release\mtc.exe"),
+            ];
+            for c in &temp_candidates {
+                if c.exists() {
+                    return Some(c.clone());
                 }
             }
             None
@@ -259,6 +290,21 @@ mod win_gui {
                     return Some(path);
                 }
             }
+            #[cfg(windows)]
+            {
+                if let Ok(output) = std::process::Command::new("where.exe").arg("mtc.exe").output() {
+                    if output.status.success() {
+                        if let Ok(stdout) = String::from_utf8(output.stdout) {
+                            if let Some(first_line) = stdout.lines().next() {
+                                let p = PathBuf::from(first_line.trim());
+                                if p.exists() {
+                                    return Some(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             None
         }
 
@@ -268,40 +314,58 @@ mod win_gui {
 
         fn install() -> Result<PathBuf, String> {
             let bundled = Self::get_bundled_cli_path()
-                .ok_or_else(|| "未在应用目录下找到配套的 mtc.exe".to_string())?;
+                .ok_or_else(|| "未找到配套的 mtc.exe，请先执行 cargo build 生成".to_string())?;
             let target_dirs = Self::candidate_user_dirs();
-            let target_dir = target_dirs
-                .first()
-                .ok_or_else(|| "无法获取用户应用路径".to_string())?;
-            let _ = std::fs::create_dir_all(target_dir);
-            let dest = target_dir.join("mtc.exe");
-            std::fs::copy(&bundled, &dest).map_err(|e| format!("复制失败: {}", e))?;
-            Ok(dest)
+            let mut last_err = String::new();
+            for target_dir in target_dirs {
+                if let Err(e) = std::fs::create_dir_all(&target_dir) {
+                    last_err = format!("创建目录失败: {}", e);
+                    continue;
+                }
+                let dest = target_dir.join("mtc.exe");
+                match std::fs::copy(&bundled, &dest) {
+                    Ok(_) => return Ok(dest),
+                    Err(e) => last_err = format!("复制失败: {}", e),
+                }
+            }
+            Err(if last_err.is_empty() { "无法写入用户应用目录".to_string() } else { last_err })
         }
 
         fn uninstall() -> Result<(), String> {
-            if let Some(installed) = Self::find_installed_cli() {
-                std::fs::remove_file(installed).map_err(|e| format!("删除失败: {}", e))?;
+            let mut removed = false;
+            for dir in Self::candidate_user_dirs() {
+                let p = dir.join("mtc.exe");
+                if p.exists() && std::fs::remove_file(&p).is_ok() {
+                    removed = true;
+                }
             }
-            Ok(())
+            if removed {
+                Ok(())
+            } else {
+                Err("未找到已安装的 mtc.exe 副本".to_string())
+            }
         }
 
         fn test_in_terminal() {
+            let cli_cmd = if let Some(p) = Self::find_installed_cli().or_else(Self::get_bundled_cli_path) {
+                format!("& '{}' -n", p.to_string_lossy())
+            } else {
+                "mtc -n".to_string()
+            };
+
             let wt_res = std::process::Command::new("wt.exe")
-                .args(["powershell.exe", "-NoExit", "-Command", "mtc -n"])
+                .args(["powershell.exe", "-NoExit", "-Command", &cli_cmd])
                 .spawn();
             if wt_res.is_err() {
                 let _ = std::process::Command::new("powershell.exe")
-                    .args(["-NoExit", "-Command", "mtc -n"])
+                    .args(["-NoExit", "-Command", &cli_cmd])
                     .spawn();
             }
         }
 
         fn reveal_in_explorer() {
             if let Some(p) = Self::find_installed_cli().or_else(Self::get_bundled_cli_path) {
-                let _ = std::process::Command::new("explorer.exe")
-                    .arg(format!("/select,{}", p.to_string_lossy()))
-                    .spawn();
+                reveal_file_in_explorer(&p.to_string_lossy());
             }
         }
     }
@@ -507,8 +571,26 @@ mod win_gui {
         )
     }
 
-    /// 弹出原生 Windows 文件属性对话框
-    unsafe fn show_file_properties(exe_path: &str) {
+    /// 在 Windows 资源管理器中安全精准高亮定位文件 (解决引号转义崩溃缺陷)
+    fn reveal_file_in_explorer(path: &str) {
+        if path.is_empty() {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let mut cmd = std::process::Command::new("explorer.exe");
+            cmd.raw_arg(format!("/select,\"{}\"", path));
+            if cmd.spawn().is_err() {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    let _ = std::process::Command::new("explorer.exe").arg(parent).spawn();
+                }
+            }
+        }
+    }
+
+    /// 弹出原生 Windows 文件属性对话框 (基于 COM 单线程套间)
+    unsafe fn show_file_properties(hwnd: HWND, exe_path: &str) {
         if exe_path.is_empty() {
             return;
         }
@@ -517,14 +599,30 @@ mod win_gui {
         let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
         sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
         sei.fMask = SEE_MASK_INVOKEIDLIST;
+        sei.hwnd = hwnd;
         sei.lpVerb = wverb.as_ptr();
         sei.lpFile = wpath.as_ptr();
-        sei.nShow = 1; // SW_SHOWNORMAL
+        sei.nShow = SW_SHOWNORMAL as i32;
         let res = ShellExecuteExW(&mut sei);
         if res == 0 {
-            let _ = std::process::Command::new("explorer.exe")
-                .arg(format!("/select,{}", exe_path))
-                .spawn();
+            reveal_file_in_explorer(exe_path);
+        }
+    }
+
+    /// 统一从当前激活 Tab 获取指定行项目及保护属性
+    fn get_item_at(state: &GuiState, idx: usize) -> Option<(AppTarget, bool)> {
+        match state.active_tab {
+            0 => state.targets.get(idx).map(|a| (a.clone(), false)),
+            1 => state.protected.get(idx).map(|(a, _)| (a.clone(), true)),
+            2 => {
+                if idx < state.targets.len() {
+                    Some((state.targets[idx].clone(), false))
+                } else {
+                    let p_idx = idx - state.targets.len();
+                    state.protected.get(p_idx).map(|(a, _)| (a.clone(), true))
+                }
+            }
+            _ => None,
         }
     }
 
@@ -546,6 +644,7 @@ mod win_gui {
             }
 
             sort_targets(&mut targets, state.prefs.sort_mode);
+            sort_protected(&mut protected, state.prefs.sort_mode);
 
             state.targets = targets;
             state.protected = protected;
@@ -572,6 +671,7 @@ mod win_gui {
             }
 
             sort_targets(&mut targets, state.prefs.sort_mode);
+            sort_protected(&mut protected, state.prefs.sort_mode);
 
             state.targets = targets;
             state.protected = protected;
@@ -824,6 +924,9 @@ mod win_gui {
                 state.prefs.sort_mode = mode;
                 state.prefs.save();
                 sort_targets(&mut state.targets, mode);
+                sort_protected(&mut state.protected, mode);
+                state.status_message = Some(format!("{}: {}", tr(I18nKey::MenuSortBy, state.active_language), mode.label()));
+                state.status_timestamp = Some(Instant::now());
             }
             InvalidateRect(hwnd, std::ptr::null(), 1);
         }
@@ -881,24 +984,14 @@ mod win_gui {
         }
     }
 
-    unsafe fn show_row_more_menu(hwnd: HWND, actual_idx: usize, is_protected_tab: bool) {
+    unsafe fn show_row_more_menu(hwnd: HWND, actual_idx: usize) {
         let (app_info, lang) = {
             let state_guard = STATE.lock().unwrap();
-            let state = state_guard.as_ref().unwrap();
-            let info = if is_protected_tab {
-                if actual_idx < state.protected.len() {
-                    Some((state.protected[actual_idx].0.clone(), true))
-                } else {
-                    None
-                }
-            } else {
-                if actual_idx < state.targets.len() {
-                    Some((state.targets[actual_idx].clone(), false))
-                } else {
-                    None
-                }
+            let state = match state_guard.as_ref() {
+                Some(s) => s,
+                None => return,
             };
-            (info, state.active_language)
+            (get_item_at(state, actual_idx), state.active_language)
         };
 
         let (app, is_protected) = match app_info {
@@ -952,7 +1045,12 @@ mod win_gui {
                 {
                     let mut state_guard = STATE.lock().unwrap();
                     if let Some(state) = state_guard.as_mut() {
-                        state.whitelist.add_user_rule(&app.name);
+                        state.whitelist.protect(&app.name);
+                        if let Some(exe_name) = std::path::Path::new(&app.exe_path).file_name().and_then(|n| n.to_str()) {
+                            state.whitelist.protect(exe_name);
+                        }
+                        state.status_message = Some(format!("已将 {} 加入保护名单", app.name));
+                        state.status_timestamp = Some(Instant::now());
                     }
                 }
                 refresh_scan();
@@ -962,14 +1060,41 @@ mod win_gui {
                 {
                     let mut state_guard = STATE.lock().unwrap();
                     if let Some(state) = state_guard.as_mut() {
-                        state.whitelist.remove_user_rule(&app.name);
+                        state.whitelist.unprotect(&app.name);
+                        if let Some(exe_name) = std::path::Path::new(&app.exe_path).file_name().and_then(|n| n.to_str()) {
+                            state.whitelist.unprotect(exe_name);
+                        }
+                        state.status_message = Some(format!("已解除 {} 的保护状态", app.name));
+                        state.status_timestamp = Some(Instant::now());
                     }
                 }
                 refresh_scan();
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_FORCE_KILL => {
-                tiered_terminate(&[app], TerminationMode::ForceImmediate, 0, &WhitelistManager::new());
+                if is_explorer(&app.name) || is_explorer(&app.bundle_id) {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some("系统资源管理器严禁强制终止".to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                } else {
+                    #[cfg(windows)]
+                    {
+                        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, app.pid) };
+                        if !handle.is_null() {
+                            unsafe {
+                                TerminateProcess(handle, 1);
+                                CloseHandle(handle);
+                            }
+                        }
+                    }
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some(format!("已强制结束: {}", app.name));
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                }
                 refresh_scan();
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
@@ -987,9 +1112,14 @@ mod win_gui {
             }
             IDM_ROW_REVEAL => {
                 if !app.exe_path.is_empty() {
-                    let _ = std::process::Command::new("explorer.exe")
-                        .arg(format!("/select,{}", app.exe_path))
-                        .spawn();
+                    reveal_file_in_explorer(&app.exe_path);
+                } else {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some("无法获取该进程的可执行文件路径".to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
                 }
             }
             IDM_ROW_COPY_NAME => {
@@ -1015,7 +1145,16 @@ mod win_gui {
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_PROPERTIES => {
-                show_file_properties(&app.exe_path);
+                if !app.exe_path.is_empty() {
+                    show_file_properties(hwnd, &app.exe_path);
+                } else {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some("无法获取该进程的可执行文件路径".to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
+                }
             }
             _ => {}
         }
@@ -1138,37 +1277,53 @@ mod win_gui {
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CFG_RELOAD => {
-                refresh_scan();
                 {
                     let mut state_guard = STATE.lock().unwrap();
                     if let Some(state) = state_guard.as_mut() {
-                        state.status_message = Some("白名单规则已重载".to_string());
+                        state.whitelist = WhitelistManager::new();
+                        state.status_message = Some("白名单规则已重新加载".to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                }
+                refresh_scan();
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_TOGGLE_DETAILED_METRICS => {
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.prefs.show_detailed_metrics = !state.prefs.show_detailed_metrics;
+                        state.prefs.save();
+                        let s = if state.prefs.show_detailed_metrics { "已开启详细指标" } else { "已关闭详细指标" };
+                        state.status_message = Some(s.to_string());
                         state.status_timestamp = Some(Instant::now());
                     }
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
-            IDM_CFG_TOGGLE_DETAILED_METRICS => {
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.prefs.show_detailed_metrics = !state.prefs.show_detailed_metrics;
-                    state.prefs.save();
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
             IDM_CFG_TOGGLE_APP_ID => {
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.prefs.show_app_identifier = !state.prefs.show_app_identifier;
-                    state.prefs.save();
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.prefs.show_app_identifier = !state.prefs.show_app_identifier;
+                        state.prefs.save();
+                        let s = if state.prefs.show_app_identifier { "已开启进程标识" } else { "已关闭进程标识" };
+                        state.status_message = Some(s.to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CFG_TOGGLE_SORT_BTN => {
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.prefs.show_sort_button = !state.prefs.show_sort_button;
-                    state.prefs.save();
+                {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.prefs.show_sort_button = !state.prefs.show_sort_button;
+                        state.prefs.save();
+                        let s = if state.prefs.show_sort_button { "已显示排序按钮" } else { "已隐藏排序按钮" };
+                        state.status_message = Some(s.to_string());
+                        state.status_timestamp = Some(Instant::now());
+                    }
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
@@ -1185,6 +1340,9 @@ mod win_gui {
                     state.prefs.sort_mode = new_mode;
                     state.prefs.save();
                     sort_targets(&mut state.targets, new_mode);
+                    sort_protected(&mut state.protected, new_mode);
+                    state.status_message = Some(format!("{}: {}", tr(I18nKey::MenuSortBy, state.active_language), new_mode.label()));
+                    state.status_timestamp = Some(Instant::now());
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
@@ -1203,15 +1361,31 @@ mod win_gui {
             }
             IDM_CLI_TEST_TERMINAL => {
                 CliManager::test_in_terminal();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("正在终端中启动 mtc...".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CLI_REVEAL => {
                 CliManager::reveal_in_explorer();
-            }
-            IDM_CLI_UNINSTALL => {
-                let _ = CliManager::uninstall();
                 let mut state_guard = STATE.lock().unwrap();
                 if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some("CLI 工具已从用户路径移除".to_string());
+                    state.status_message = Some("正在文件资源管理器中定位 mtc.exe...".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CLI_UNINSTALL => {
+                let res = CliManager::uninstall();
+                let status = match res {
+                    Ok(_) => "CLI 工具已从用户路径移除".to_string(),
+                    Err(e) => format!("CLI 卸载失败: {}", e),
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(status);
                     state.status_timestamp = Some(Instant::now());
                 }
                 InvalidateRect(hwnd, std::ptr::null(), 1);
@@ -1223,21 +1397,23 @@ mod win_gui {
                     let _ = std::fs::create_dir_all(&dir);
                     let _ = std::fs::write(&path, "# Task Cleaner Configuration\n");
                 }
-                let _ = std::process::Command::new("notepad.exe")
-                    .arg(path.to_string_lossy().to_string())
-                    .spawn();
+                let path_str = path.to_string_lossy().to_string();
+                let wverb = to_wstring("open");
+                let wpath = to_wstring(&path_str);
+                ShellExecuteW(hwnd, wverb.as_ptr(), wpath.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
             }
             IDM_CFG_OPEN_DIR => {
                 let dir = WhitelistManager::get_config_dir();
                 let _ = std::fs::create_dir_all(&dir);
-                let _ = std::process::Command::new("explorer.exe")
-                    .arg(dir.to_string_lossy().to_string())
-                    .spawn();
+                let dir_str = dir.to_string_lossy().to_string();
+                let wverb = to_wstring("open");
+                let wdir = to_wstring(&dir_str);
+                ShellExecuteW(hwnd, wverb.as_ptr(), wdir.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
             }
             IDM_CFG_GITHUB => {
-                let _ = std::process::Command::new("cmd.exe")
-                    .args(["/c", "start", "https://github.com/macos-task-cleaner/windows-task-cleaner-gui"])
-                    .spawn();
+                let wverb = to_wstring("open");
+                let wurl = to_wstring("https://github.com/macos-task-cleaner/windows-task-cleaner-gui");
+                ShellExecuteW(hwnd, wverb.as_ptr(), wurl.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
             }
             IDM_CFG_ABOUT => {
                 let caption = to_wstring("Task Cleaner");
@@ -1305,6 +1481,8 @@ mod win_gui {
                 state.prefs.language_pref = LanguagePreference::Auto;
                 state.active_language = detect_system_language();
                 state.prefs.save();
+                state.status_message = Some("语言已设置为跟随系统".to_string());
+                state.status_timestamp = Some(Instant::now());
             }
             InvalidateRect(hwnd, std::ptr::null(), 1);
         } else if cmd >= IDM_LANG_BASE && cmd < (IDM_LANG_BASE + Language::ALL.len()) {
@@ -1314,6 +1492,8 @@ mod win_gui {
                 state.prefs.language_pref = LanguagePreference::Specific(target_lang);
                 state.active_language = target_lang;
                 state.prefs.save();
+                state.status_message = Some(format!("语言已切换为: {}", target_lang.display_name()));
+                state.status_timestamp = Some(Instant::now());
             }
             InvalidateRect(hwnd, std::ptr::null(), 1);
         }
@@ -1322,23 +1502,36 @@ mod win_gui {
     fn execute_clean_all(mode: TerminationMode) {
         let mut state_guard = STATE.lock().unwrap();
         if let Some(state) = state_guard.as_mut() {
+            let lang = state.active_language;
+            if mode == TerminationMode::PurgeWorkingSet {
+                let mut purged_count = 0;
+                for t in &state.targets {
+                    if purge_process_working_set(t.pid) {
+                        purged_count += 1;
+                    }
+                }
+                for (p, _) in &state.protected {
+                    if purge_process_working_set(p.pid) {
+                        purged_count += 1;
+                    }
+                }
+                state.status_message = Some(format!(
+                    "{} {} 个进程内存工作集",
+                    tr(I18nKey::ActionCleanPurge, lang),
+                    purged_count
+                ));
+                state.status_timestamp = Some(Instant::now());
+                return;
+            }
+
             if state.targets.is_empty() {
                 return;
             }
             let report = tiered_terminate(&state.targets, mode, 400, &state.whitelist);
-            let lang = state.active_language;
-            if mode == TerminationMode::PurgeWorkingSet {
-                state.status_message = Some(format!(
-                    "{} {} 个进程内存工作集",
-                    tr(I18nKey::ActionCleanPurge, lang),
-                    report.purged
-                ));
-            } else {
-                state.status_message = Some(format!(
-                    "已结束 {} 个任务",
-                    report.terminated_graceful + report.terminated_force
-                ));
-            }
+            state.status_message = Some(format!(
+                "已结束 {} 个任务",
+                report.terminated_graceful + report.terminated_force
+            ));
             state.status_timestamp = Some(Instant::now());
         }
     }
@@ -2153,13 +2346,12 @@ mod win_gui {
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
                 if y >= 175 && y <= 175 + (VISIBLE_ROWS as i32 * ROW_HEIGHT) {
                     let visible_idx = ((y - 175) / ROW_HEIGHT) as usize;
-                    let (scroll, active_tab) = {
+                    let scroll = {
                         let state = STATE.lock().unwrap();
-                        let s = state.as_ref().unwrap();
-                        (s.scroll_offset, s.active_tab)
+                        state.as_ref().map(|s| s.scroll_offset).unwrap_or(0)
                     };
                     let actual_idx = scroll + visible_idx;
-                    show_row_more_menu(hwnd, actual_idx, active_tab == 1);
+                    show_row_more_menu(hwnd, actual_idx);
                     return 0;
                 }
                 0
@@ -2233,39 +2425,47 @@ mod win_gui {
                 // 5. 应用列表行操作
                 if y >= 175 && y <= 175 + (VISIBLE_ROWS as i32 * ROW_HEIGHT) {
                     let visible_idx = ((y - 175) / ROW_HEIGHT) as usize;
-                    let (scroll, active_tab) = {
+                    let scroll = {
                         let state = STATE.lock().unwrap();
-                        let s = state.as_ref().unwrap();
-                        (s.scroll_offset, s.active_tab)
+                        state.as_ref().map(|s| s.scroll_offset).unwrap_or(0)
                     };
                     let actual_idx = scroll + visible_idx;
 
                     // 单项垃圾桶结束
                     if x >= 256 && x <= 278 {
-                        let mut target_to_kill = None;
-                        {
+                        let item_to_kill = {
                             let state_guard = STATE.lock().unwrap();
                             if let Some(state) = state_guard.as_ref() {
-                                if active_tab == 0 && actual_idx < state.targets.len() {
-                                    target_to_kill = Some(state.targets[actual_idx].clone());
-                                } else if active_tab == 2 {
-                                    if actual_idx < state.targets.len() {
-                                        target_to_kill = Some(state.targets[actual_idx].clone());
-                                    }
-                                }
+                                get_item_at(state, actual_idx)
+                            } else {
+                                None
                             }
-                        }
-                        if let Some(target) = target_to_kill {
-                            tiered_terminate(&[target], TerminationMode::Standard, 400, &WhitelistManager::new());
-                            refresh_scan();
-                            InvalidateRect(hwnd, std::ptr::null(), 1);
-                            return 0;
+                        };
+                        if let Some((app, is_prot)) = item_to_kill {
+                            if !is_prot {
+                                if is_explorer(&app.name) || is_explorer(&app.bundle_id) {
+                                    let mut state_guard = STATE.lock().unwrap();
+                                    if let Some(state) = state_guard.as_mut() {
+                                        state.status_message = Some("系统资源管理器严禁终止".to_string());
+                                        state.status_timestamp = Some(Instant::now());
+                                    }
+                                } else {
+                                    let whitelist = {
+                                        let state_guard = STATE.lock().unwrap();
+                                        state_guard.as_ref().map(|s| s.whitelist.clone()).unwrap_or_else(WhitelistManager::new)
+                                    };
+                                    tiered_terminate(&[app], TerminationMode::Standard, 400, &whitelist);
+                                    refresh_scan();
+                                }
+                                InvalidateRect(hwnd, std::ptr::null(), 1);
+                                return 0;
+                            }
                         }
                     }
 
                     // 竖三点更多菜单
                     if x >= 282 && x <= 304 {
-                        show_row_more_menu(hwnd, actual_idx, active_tab == 1);
+                        show_row_more_menu(hwnd, actual_idx);
                         return 0;
                     }
                 }
@@ -2304,6 +2504,9 @@ mod win_gui {
     }
 
     pub fn run_gui() {
+        unsafe {
+            CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED as u32);
+        }
         let h_instance = unsafe { GetModuleHandleW(std::ptr::null()) };
         let class_name = to_wstring("TaskCleanerTrayWindow");
 
@@ -2435,6 +2638,7 @@ mod win_gui {
                     }
                 }
             }
+            CoUninitialize();
         }
     }
 }

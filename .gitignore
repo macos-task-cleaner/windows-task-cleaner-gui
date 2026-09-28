@@ -29,3 +29,5 @@ $RECYCLE.BIN/
 ## Logs & Publish Artifacts
 logs/*.log
 publish/
+config.toml
+gui_settings.json

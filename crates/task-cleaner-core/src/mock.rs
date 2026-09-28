@@ -110,3 +110,39 @@ pub fn sort_targets(targets: &mut [AppTarget], mode: crate::model::SortMode) {
         }
     }
 }
+
+pub fn sort_protected(
+    protected: &mut [(AppTarget, crate::whitelist::WhitelistMatch)],
+    mode: crate::model::SortMode,
+) {
+    match mode {
+        crate::model::SortMode::Composite => {
+            protected.sort_by(|a, b| {
+                b.0.composite_score
+                    .partial_cmp(&a.0.composite_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        crate::model::SortMode::Memory => {
+            protected.sort_by(|a, b| b.0.memory_bytes.cmp(&a.0.memory_bytes));
+        }
+        crate::model::SortMode::Cpu => {
+            protected.sort_by(|a, b| {
+                b.0.cpu_percent
+                    .partial_cmp(&a.0.cpu_percent)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        crate::model::SortMode::Windows => {
+            protected.sort_by(|a, b| b.0.window_count.cmp(&a.0.window_count));
+        }
+        crate::model::SortMode::Default => {
+            protected.sort_by(|a, b| {
+                a.0.name
+                    .to_lowercase()
+                    .cmp(&b.0.name.to_lowercase())
+                    .then_with(|| a.0.pid.cmp(&b.0.pid))
+            });
+        }
+    }
+}

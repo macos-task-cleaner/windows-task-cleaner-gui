@@ -23,15 +23,15 @@ pub use i18n::{
 #[cfg(windows)]
 pub use windows::{
     calculate_composite_score, get_caller_lineage, get_process_memory_bytes, is_explorer,
-    is_process_alive, purge_process_working_set, scan_foreground_apps, sort_targets,
-    tiered_terminate,
+    is_process_alive, purge_process_working_set, scan_foreground_apps, sort_protected,
+    sort_targets, tiered_terminate,
 };
 
 #[cfg(not(windows))]
 pub use mock::{
     calculate_composite_score, get_caller_lineage, get_process_memory_bytes, is_explorer,
-    is_process_alive, purge_process_working_set, scan_foreground_apps, sort_targets,
-    tiered_terminate,
+    is_process_alive, purge_process_working_set, scan_foreground_apps, sort_protected,
+    sort_targets, tiered_terminate,
 };
 
 
@@ -90,5 +90,67 @@ mod tests {
         sort_targets(&mut targets, SortMode::Composite);
         assert_eq!(targets[0].name, "heavy.exe");
         assert!(targets[0].composite_score > targets[1].composite_score);
+    }
+
+    #[test]
+    fn test_whitelist_unprotect_and_protect() {
+        let mut mgr = WhitelistManager::new();
+        let target = AppTarget::new(1234, "Code.exe", "Code.exe");
+        let lineage = std::collections::HashSet::new();
+
+        // 1. Initial state: Code.exe is protected (L2 developer tool)
+        assert!(mgr.is_protected(&target, &lineage));
+
+        // 2. Unprotect Code.exe -> should no longer be protected
+        assert!(mgr.unprotect("Code.exe"));
+        assert!(!mgr.is_protected(&target, &lineage));
+
+        // 3. Re-protect Code.exe -> should be protected again
+        assert!(mgr.protect("Code.exe"));
+        assert!(mgr.is_protected(&target, &lineage));
+    }
+
+    #[test]
+    fn test_sort_protected() {
+        let dummy_match = WhitelistMatch {
+            tier: WhitelistTier::L1CoreOs,
+            tier_label: "L1".to_string(),
+            matched_rule: "rule".to_string(),
+        };
+
+        let mut protected = vec![
+            (
+                AppTarget {
+                    pid: 10,
+                    name: "app_small.exe".to_string(),
+                    bundle_id: "app_small.exe".to_string(),
+                    title: "Small".to_string(),
+                    exe_path: "".to_string(),
+                    memory_bytes: 10 * 1024 * 1024,
+                    cpu_percent: 1.0,
+                    window_count: 1,
+                    composite_score: 5.0,
+                },
+                dummy_match.clone(),
+            ),
+            (
+                AppTarget {
+                    pid: 20,
+                    name: "app_large.exe".to_string(),
+                    bundle_id: "app_large.exe".to_string(),
+                    title: "Large".to_string(),
+                    exe_path: "".to_string(),
+                    memory_bytes: 500 * 1024 * 1024,
+                    cpu_percent: 5.0,
+                    window_count: 2,
+                    composite_score: 50.0,
+                },
+                dummy_match,
+            ),
+        ];
+
+        sort_protected(&mut protected, SortMode::Memory);
+        assert_eq!(protected[0].0.name, "app_large.exe");
+        assert_eq!(protected[1].0.name, "app_small.exe");
     }
 }

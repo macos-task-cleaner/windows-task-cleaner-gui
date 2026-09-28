@@ -251,11 +251,15 @@ impl WhitelistManager {
 
         // 3. L2 会话终端层 (PID 血缘优先保护)
         if caller_lineage.contains(&target.pid) {
-            return Some(WhitelistMatch {
-                tier: WhitelistTier::L2ContextShell,
-                tier_label: WhitelistTier::L2ContextShell.label().to_string(),
-                matched_rule: format!("Caller Ancestry PID {}", target.pid),
-            });
+            let is_disabled = self.disabled_rules.contains(&process_name)
+                || (!exe_file.is_empty() && self.disabled_rules.contains(&exe_file));
+            if !is_disabled {
+                return Some(WhitelistMatch {
+                    tier: WhitelistTier::L2ContextShell,
+                    tier_label: WhitelistTier::L2ContextShell.label().to_string(),
+                    matched_rule: format!("Caller Ancestry PID {}", target.pid),
+                });
+            }
         }
         if let Some(matched) = check_match(&self.l2_names) {
             if !self.disabled_rules.contains(&matched) {
@@ -295,24 +299,37 @@ impl WhitelistManager {
     }
 
     pub fn add_user_rule(&mut self, rule: &str) -> bool {
+        self.protect(rule)
+    }
+
+    pub fn remove_user_rule(&mut self, rule: &str) -> bool {
+        self.unprotect(rule)
+    }
+
+    pub fn protect(&mut self, rule: &str) -> bool {
         let clean = rule.trim().to_lowercase();
         if clean.is_empty() {
             return false;
         }
+        self.disabled_rules.remove(&clean);
         let added = self.l4_user_names.insert(clean);
-        if added {
-            let _ = self.save_user_config();
-        }
+        let _ = self.save_user_config();
         added
     }
 
-    pub fn remove_user_rule(&mut self, rule: &str) -> bool {
+    pub fn unprotect(&mut self, rule: &str) -> bool {
         let clean = rule.trim().to_lowercase();
-        let removed = self.l4_user_names.remove(&clean);
-        if removed {
-            let _ = self.save_user_config();
+        if clean.is_empty() {
+            return false;
         }
-        removed
+        let removed = self.l4_user_names.remove(&clean);
+        let disabled = self.disabled_rules.insert(clean);
+        if removed || disabled {
+            let _ = self.save_user_config();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn get_user_rules(&self) -> Vec<String> {

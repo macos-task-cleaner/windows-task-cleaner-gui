@@ -41,3 +41,37 @@ pub fn sort_targets(targets: &mut [AppTarget], mode: SortMode) {
         }
     }
 }
+
+/// 按照指定模式对受保护应用列表进行排序
+pub fn sort_protected(protected: &mut [(AppTarget, crate::whitelist::WhitelistMatch)], mode: SortMode) {
+    match mode {
+        SortMode::Composite => {
+            protected.sort_by(|a, b| {
+                b.0.composite_score
+                    .partial_cmp(&a.0.composite_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        SortMode::Memory => {
+            protected.sort_by(|a, b| b.0.memory_bytes.cmp(&a.0.memory_bytes));
+        }
+        SortMode::Cpu => {
+            protected.sort_by(|a, b| {
+                b.0.cpu_percent
+                    .partial_cmp(&a.0.cpu_percent)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        SortMode::Windows => {
+            protected.sort_by(|a, b| b.0.window_count.cmp(&a.0.window_count));
+        }
+        SortMode::Default => {
+            protected.sort_by(|a, b| {
+                a.0.name
+                    .to_lowercase()
+                    .cmp(&b.0.name.to_lowercase())
+                    .then_with(|| a.0.pid.cmp(&b.0.pid))
+            });
+        }
+    }
+}

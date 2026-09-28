@@ -153,11 +153,12 @@ fn get_process_name_by_pid(pid: u32) -> String {
 
 pub fn get_process_memory_bytes(pid: u32) -> u64 {
     let handle: HANDLE = unsafe {
-        OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-            0,
-            pid,
-        )
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if !h.is_null() {
+            h
+        } else {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid)
+        }
     };
     if handle.is_null() {
         return 0;
@@ -201,11 +202,12 @@ pub fn scan_foreground_apps() -> Vec<AppTarget> {
     for (pid, windows) in ctx.pid_windows {
         let title = ctx.pid_titles.get(&pid).cloned().unwrap_or_default();
         let handle: HANDLE = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-                0,
-                pid,
-            )
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if !h.is_null() {
+                h
+            } else {
+                OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid)
+            }
         };
 
         let mut exe_path = String::new();
