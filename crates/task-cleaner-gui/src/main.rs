@@ -25,19 +25,19 @@ mod win_gui {
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
-        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, RoundRect,
-        SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, DT_CENTER, DT_END_ELLIPSIS,
-        DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL,
-        FW_SEMIBOLD, HBRUSH, HDC, HFONT, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY,
-        TRANSPARENT,
+        BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
+        CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
+        GetDC, GetStockObject, ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor,
+        BLACK_BRUSH, CLEARTYPE_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+        DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC,
+        HFONT, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
     };
     use windows_sys::Win32::UI::Shell::{
-        ExtractIconExW, Shell_NotifyIconW, APPBARDATA, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
+        ExtractIconExW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
         NIF_TIP, NIM_ADD, NIM_DELETE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -45,11 +45,12 @@ mod win_gui {
         DestroyIcon, DestroyMenu, DispatchMessageW, DrawIconEx, GetCursorPos, GetMessageW,
         GetSystemMetrics, LoadCursorW, ICONINFO, IDC_ARROW, MF_CHECKED, MF_SEPARATOR,
         MF_STRING, MSG, PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowPos,
-        ShowWindow, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON, HMENU,
-        SM_CXSMICON, SM_CYSMICON, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, WM_ACTIVATE,
-        WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_PAINT, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW,
+        DI_NORMAL, HICON, HMENU, HWND_TOPMOST, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA,
+        SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN,
+        TPM_LEFTALIGN, TPM_RETURNCMD, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP,
+        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
@@ -141,6 +142,7 @@ mod win_gui {
     enum HoverButton {
         SortMenu,
         Refresh,
+        CloseToTray,
         HeroMain,
         HeroChevron,
         Tab(usize),
@@ -218,13 +220,17 @@ mod win_gui {
 
     /// 动态合成现代极简胶囊 X 几何托盘图标 (无外部资源依赖，100% 独立稳定)
     unsafe fn create_default_tray_icon() -> HICON {
-        let cx = GetSystemMetrics(SM_CXSMICON);
-        let cy = GetSystemMetrics(SM_CYSMICON);
-        let hdc = CreateCompatibleDC(0 as HDC);
+        let cx = GetSystemMetrics(SM_CXSMICON).max(16);
+        let cy = GetSystemMetrics(SM_CYSMICON).max(16);
+        let screen_dc = GetDC(0 as HWND);
+        let hdc = CreateCompatibleDC(screen_dc);
 
-        let hbm_color = CreateCompatibleBitmap(hdc, cx, cy);
-        let hbm_mask = CreateCompatibleBitmap(hdc, cx, cy);
+        let hbm_color = CreateCompatibleBitmap(screen_dc, cx, cy);
+        let hbm_mask = CreateBitmap(cx, cy, 1, 1, std::ptr::null());
 
+        ReleaseDC(0 as HWND, screen_dc);
+
+        // 1. 绘制彩色底板与标志 (Windows 经典 Accent 蓝底)
         let h_old = SelectObject(hdc, hbm_color);
         let bg_brush = CreateSolidBrush(COLOR_ACCENT_BLUE);
         let rect = RECT { left: 0, top: 0, right: cx, bottom: cy };
@@ -232,16 +238,24 @@ mod win_gui {
         DeleteObject(bg_brush);
 
         let fg_brush = CreateSolidBrush(rgb(255, 255, 255));
+        let pad = cx / 4;
         let inner_rect = RECT {
-            left: cx / 4,
-            top: cy / 4,
-            right: cx * 3 / 4,
-            bottom: cy * 3 / 4,
+            left: pad,
+            top: pad,
+            right: cx - pad,
+            bottom: cy - pad,
         };
         FillRect(hdc, &inner_rect, fg_brush);
         DeleteObject(fg_brush);
 
         SelectObject(hdc, h_old);
+
+        // 2. 初始化 Mask 蒙版为全黑 (0 = 100% 不透明，杜绝噪点棋盘杂色)
+        let mask_old = SelectObject(hdc, hbm_mask);
+        let black_brush = GetStockObject(BLACK_BRUSH as i32);
+        FillRect(hdc, &rect, black_brush as HBRUSH);
+        SelectObject(hdc, mask_old);
+
         DeleteDC(hdc);
 
         let icon_info = ICONINFO {
@@ -329,35 +343,39 @@ mod win_gui {
         }
     }
 
-    /// 锚定窗口吸附在任务栏托盘正上方
-    unsafe fn position_above_tray(hwnd: HWND) {
-        let mut data: APPBARDATA = std::mem::zeroed();
-        data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
-
-        let res = windows_sys::Win32::UI::Shell::SHAppBarMessage(
-            windows_sys::Win32::UI::Shell::ABM_GETTASKBARPOS,
-            &mut data,
+    /// 自动将窗口精确吸附在屏幕右下角任务栏正上方 (支持任意分辨率和任务栏位置)
+    unsafe fn position_window(hwnd: HWND) {
+        let mut work_area: RECT = std::mem::zeroed();
+        SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            &mut work_area as *mut _ as *mut _,
+            0,
         );
 
-        let (x, y) = if res != 0 {
-            match data.uEdge {
-                1 => (data.rc.right - WINDOW_WIDTH - 12, data.rc.bottom + 8),
-                0 => (data.rc.right + 8, data.rc.bottom - WINDOW_HEIGHT - 12),
-                2 => (data.rc.left - WINDOW_WIDTH - 8, data.rc.bottom - WINDOW_HEIGHT - 12),
-                _ => (data.rc.right - WINDOW_WIDTH - 12, data.rc.top - WINDOW_HEIGHT - 8),
-            }
+        let screen_w = work_area.right - work_area.left;
+        let screen_h = work_area.bottom - work_area.top;
+
+        let x = if screen_w > WINDOW_WIDTH {
+            work_area.right - WINDOW_WIDTH - 16
         } else {
-            (1920 - WINDOW_WIDTH - 20, 1080 - WINDOW_HEIGHT - 60)
+            work_area.left
+        };
+
+        let y = if screen_h > WINDOW_HEIGHT {
+            work_area.bottom - WINDOW_HEIGHT - 12
+        } else {
+            work_area.top
         };
 
         SetWindowPos(
             hwnd,
-            0 as HWND,
+            HWND_TOPMOST,
             x,
             y,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
-            SWP_NOZORDER | SWP_NOACTIVATE,
+            SWP_SHOWWINDOW,
         );
     }
 
@@ -385,7 +403,12 @@ mod win_gui {
 
         match cmd as usize {
             IDM_OPEN => {
-                toggle_window(hwnd);
+                refresh_scan();
+                position_window(hwnd);
+                ShowWindow(hwnd, SW_SHOW);
+                SetForegroundWindow(hwnd);
+                IS_VISIBLE.store(true, Ordering::SeqCst);
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_REFRESH => {
                 refresh_scan();
@@ -632,7 +655,7 @@ mod win_gui {
             IS_VISIBLE.store(false, Ordering::SeqCst);
         } else {
             refresh_scan();
-            position_above_tray(hwnd);
+            position_window(hwnd);
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
             IS_VISIBLE.store(true, Ordering::SeqCst);
@@ -688,7 +711,7 @@ mod win_gui {
             DrawTextW(mem_dc, badge_text.as_ptr(), -1, &mut b_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 排序按钮 [↕]
-            let sort_rect = RECT { left: 260, top: 13, right: 282, bottom: 35 };
+            let sort_rect = RECT { left: 236, top: 13, right: 258, bottom: 35 };
             let is_sort_hover = hovered_btn == Some(HoverButton::SortMenu);
             if is_sort_hover {
                 draw_rounded_box(mem_dc, &sort_rect, 6, COLOR_BTN_HOVER, None);
@@ -700,7 +723,7 @@ mod win_gui {
             DrawTextW(mem_dc, sort_icon.as_ptr(), -1, &mut s_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 刷新按钮 [↻]
-            let ref_rect = RECT { left: 286, top: 13, right: 308, bottom: 35 };
+            let ref_rect = RECT { left: 262, top: 13, right: 284, bottom: 35 };
             let is_ref_hover = hovered_btn == Some(HoverButton::Refresh);
             if is_ref_hover {
                 draw_rounded_box(mem_dc, &ref_rect, 6, COLOR_BTN_HOVER, None);
@@ -710,6 +733,18 @@ mod win_gui {
             let mut r_rect = ref_rect;
             let ref_icon = to_wstring("↻");
             DrawTextW(mem_dc, ref_icon.as_ptr(), -1, &mut r_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // 最小化到托盘按钮 [×]
+            let close_rect = RECT { left: 288, top: 13, right: 308, bottom: 35 };
+            let is_close_hover = hovered_btn == Some(HoverButton::CloseToTray);
+            if is_close_hover {
+                draw_rounded_box(mem_dc, &close_rect, 6, COLOR_BTN_HOVER, None);
+            }
+            SelectObject(mem_dc, font_body);
+            SetTextColor(mem_dc, if is_close_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
+            let mut c_rect = close_rect;
+            let close_icon = to_wstring("×");
+            DrawTextW(mem_dc, close_icon.as_ptr(), -1, &mut c_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // ----------------------------------------------------
             // 3. 核心卡片 (Hero Action Card)
@@ -1054,15 +1089,7 @@ mod win_gui {
                 }
                 0
             }
-            WM_ACTIVATE => {
-                let state = (wparam & 0xFFFF) as u32;
-                if state == 0 {
-                    // 失焦自动隐退 (标准系统托盘行为)
-                    ShowWindow(hwnd, SW_HIDE);
-                    IS_VISIBLE.store(false, Ordering::SeqCst);
-                }
-                0
-            }
+            WM_ACTIVATE => 0,
             WM_MOUSEMOVE => {
                 let mut tme: TRACKMOUSEEVENT = std::mem::zeroed();
                 tme.cbSize = std::mem::size_of::<TRACKMOUSEEVENT>() as u32;
@@ -1076,11 +1103,13 @@ mod win_gui {
                 let mut new_btn = None;
                 let mut new_row = None;
 
-                // 顶栏按钮
-                if x >= 260 && x <= 282 && y >= 13 && y <= 35 {
+                // 顶栏按钮 (排序 / 刷新 / 最小化到托盘)
+                if x >= 236 && x <= 258 && y >= 13 && y <= 35 {
                     new_btn = Some(HoverButton::SortMenu);
-                } else if x >= 286 && x <= 308 && y >= 13 && y <= 35 {
+                } else if x >= 262 && x <= 284 && y >= 13 && y <= 35 {
                     new_btn = Some(HoverButton::Refresh);
+                } else if x >= 288 && x <= 308 && y >= 13 && y <= 35 {
+                    new_btn = Some(HoverButton::CloseToTray);
                 }
                 // 核心卡片按钮
                 else if y >= 90 && y <= 122 {
@@ -1172,13 +1201,18 @@ mod win_gui {
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
 
                 // 1. 顶栏操作
-                if x >= 260 && x <= 282 && y >= 13 && y <= 35 {
+                if x >= 236 && x <= 258 && y >= 13 && y <= 35 {
                     show_sort_menu(hwnd, x, y);
                     return 0;
                 }
-                if x >= 286 && x <= 308 && y >= 13 && y <= 35 {
+                if x >= 262 && x <= 284 && y >= 13 && y <= 35 {
                     refresh_scan();
                     windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                    return 0;
+                }
+                if x >= 288 && x <= 308 && y >= 13 && y <= 35 {
+                    ShowWindow(hwnd, SW_HIDE);
+                    IS_VISIBLE.store(false, Ordering::SeqCst);
                     return 0;
                 }
 
@@ -1378,7 +1412,14 @@ mod win_gui {
 
         refresh_scan();
 
-        let mut msg: MSG = unsafe { std::mem::zeroed() };
+        // 启动时直接在屏幕右下角打开并前置展示 Fluent 2.0 主面板！
+        unsafe {
+            position_window(hwnd);
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+            IS_VISIBLE.store(true, Ordering::SeqCst);
+            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+        }
         while unsafe { GetMessageW(&mut msg, 0 as HWND, 0, 0) } > 0 {
             unsafe {
                 TranslateMessage(&msg);
