@@ -6,7 +6,7 @@ chcp 65001 | Out-Null
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 

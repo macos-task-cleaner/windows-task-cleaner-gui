@@ -9,9 +9,7 @@ param (
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
@@ -79,9 +77,9 @@ if ($Mode -eq "cli" -or $Mode -eq "mtc") {
 
 Write-Host "[INFO] Compiling $binName ($configName)..."
 if ($configArg) {
-    cargo build --bin $binName --release 2>&1 | Tee-Object -FilePath $logFilePath -Append
+    cargo build --bin $binName --release
 } else {
-    cargo build --bin $binName 2>&1 | Tee-Object -FilePath $logFilePath -Append
+    cargo build --bin $binName
 }
 
 if ($LASTEXITCODE -ne 0) {
