@@ -106,7 +106,18 @@ if (-not (Test-Path $exePath)) {
     exit 1
 }
 
-Write-Host "[SUCCESS] Launching: $exePath" -ForegroundColor Green
+# Sync final binary to workspace target directory so it is visible in Y:\ and host Mac
+$workspaceTargetDir = Join-Path $projectRoot "target\$subDir"
+if (-not (Test-Path $workspaceTargetDir)) {
+    New-Item -ItemType Directory -Path $workspaceTargetDir -Force | Out-Null
+}
+try {
+    Copy-Item -Path $exePath -Destination (Join-Path $workspaceTargetDir "$binName.exe") -Force
+} catch {}
+
+Write-Host "[SUCCESS] Executable ready at:" -ForegroundColor Green
+Write-Host "  * VM Local:      $exePath" -ForegroundColor Green
+Write-Host "  * Project Share: $(Join-Path $workspaceTargetDir "$binName.exe")" -ForegroundColor Green
 if ($binName -eq "mtc") {
     & $exePath @args
 } else {
