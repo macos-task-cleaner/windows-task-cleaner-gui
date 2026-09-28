@@ -65,10 +65,19 @@ if (Test-Path "C:\") {
     Write-Host "[INFO] Local VM Target Cache: $localTarget (High Performance I/O)"
 }
 
-$configArg = if ($Release) { "--release" } else { "" }
-$binName = if ($Mode -eq "cli" -or $Mode -eq "mtc") { "mtc" } else { "TaskCleaner" }
+$configArg = ""
+$configName = "Debug"
+if ($Release) {
+    $configArg = "--release"
+    $configName = "Release"
+}
 
-Write-Host "[INFO] Compiling $binName ($($Release ? 'Release' : 'Debug'))..."
+$binName = "TaskCleaner"
+if ($Mode -eq "cli" -or $Mode -eq "mtc") {
+    $binName = "mtc"
+}
+
+Write-Host "[INFO] Compiling $binName ($configName)..."
 if ($configArg) {
     cargo build --bin $binName --release 2>&1 | Tee-Object -FilePath $logFilePath -Append
 } else {
@@ -80,8 +89,15 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$subDir = if ($Release) { "release" } else { "debug" }
-$targetBase = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $projectRoot "target" }
+$subDir = "debug"
+if ($Release) {
+    $subDir = "release"
+}
+
+$targetBase = Join-Path $projectRoot "target"
+if ($env:CARGO_TARGET_DIR) {
+    $targetBase = $env:CARGO_TARGET_DIR
+}
 $exePath = Join-Path $targetBase "$subDir\$binName.exe"
 
 if (-not (Test-Path $exePath)) {
