@@ -66,7 +66,7 @@ mod win_gui {
         GetSystemMetrics, KillTimer, LoadCursorW, MessageBoxW, PostQuitMessage, RegisterClassExW,
         SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW,
         TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST,
-        ICONINFO, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
+        ICONINFO, IDC_ARROW, MB_ICONINFORMATION, MB_OK, MB_TOPMOST, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
         MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
         SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN,
         WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONUP, WM_MOUSEMOVE,
@@ -237,12 +237,24 @@ mod win_gui {
     impl CliManager {
         fn candidate_user_dirs() -> Vec<PathBuf> {
             let mut dirs = Vec::new();
+            // 1. Cargo bin 目录 (开发机首选，通常已在系统 PATH 中)
+            if let Ok(user_profile) = std::env::var("USERPROFILE") {
+                let cargo_bin = PathBuf::from(&user_profile).join(".cargo").join("bin");
+                if cargo_bin.is_dir() {
+                    dirs.push(cargo_bin);
+                }
+            }
+            // 2. 独立 TaskCleaner 专属 bin 目录
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                dirs.push(PathBuf::from(&local_app_data).join("Microsoft").join("WindowsApps"));
                 dirs.push(PathBuf::from(&local_app_data).join("TaskCleaner").join("bin"));
             }
+            // 3. 用户主目录 .local\bin
             if let Ok(user_profile) = std::env::var("USERPROFILE") {
                 dirs.push(PathBuf::from(&user_profile).join(".local").join("bin"));
+            }
+            // 4. WindowsApps (Win10/11 用户原生在 PATH 的目录)
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                dirs.push(PathBuf::from(&local_app_data).join("Microsoft").join("WindowsApps"));
             }
             dirs
         }
@@ -252,12 +264,22 @@ mod win_gui {
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(parent) = exe.parent() {
                     let candidate = parent.join("mtc.exe");
-                    if candidate.exists() {
+                    if candidate.is_file() {
                         return Some(candidate);
                     }
                 }
             }
-            // 2. 当前工作区 target 编译目录
+            // 2. 虚拟机开发高 IO 缓存目录 (C:\Temp\taskcleaner-target)
+            let temp_candidates = [
+                PathBuf::from(r"C:\Temp\taskcleaner-target\debug\mtc.exe"),
+                PathBuf::from(r"C:\Temp\taskcleaner-target\release\mtc.exe"),
+            ];
+            for c in &temp_candidates {
+                if c.is_file() {
+                    return Some(c.clone());
+                }
+            }
+            // 3. 当前工作区 target 编译目录
             if let Ok(cwd) = std::env::current_dir() {
                 let candidates = [
                     cwd.join("mtc.exe"),
@@ -265,19 +287,9 @@ mod win_gui {
                     cwd.join("target").join("release").join("mtc.exe"),
                 ];
                 for c in &candidates {
-                    if c.exists() {
+                    if c.is_file() {
                         return Some(c.clone());
                     }
-                }
-            }
-            // 3. 虚拟机开发高 IO 缓存目录 (C:\Temp\taskcleaner-target)
-            let temp_candidates = [
-                PathBuf::from(r"C:\Temp\taskcleaner-target\debug\mtc.exe"),
-                PathBuf::from(r"C:\Temp\taskcleaner-target\release\mtc.exe"),
-            ];
-            for c in &temp_candidates {
-                if c.exists() {
-                    return Some(c.clone());
                 }
             }
             None
@@ -286,22 +298,21 @@ mod win_gui {
         fn find_installed_cli() -> Option<PathBuf> {
             for dir in Self::candidate_user_dirs() {
                 let path = dir.join("mtc.exe");
-                if path.exists() {
+                if path.is_file() {
                     return Some(path);
                 }
             }
-            #[cfg(windows)]
-            {
-                if let Ok(output) = std::process::Command::new("where.exe").arg("mtc.exe").output() {
-                    if output.status.success() {
-                        if let Ok(stdout) = String::from_utf8(output.stdout) {
-                            if let Some(first_line) = stdout.lines().next() {
-                                let p = PathBuf::from(first_line.trim());
-                                if p.exists() {
-                                    return Some(p);
-                                }
-                            }
+            // 安全扫描局部 PATH (仅限本地盘符 C:, D: 等，绝对不发起外部进程，杜绝网络驱动器死锁)
+            if let Some(path_var) = std::env::var_os("PATH") {
+                for dir in std::env::split_paths(&path_var) {
+                    if let Some(s) = dir.to_str() {
+                        if s.starts_with(r"\\") {
+                            continue;
                         }
+                    }
+                    let candidate = dir.join("mtc.exe");
+                    if candidate.is_file() {
+                        return Some(candidate);
                     }
                 }
             }
@@ -310,6 +321,42 @@ mod win_gui {
 
         fn is_installed() -> bool {
             Self::find_installed_cli().is_some()
+        }
+
+        fn ensure_dir_in_user_path(dir: &std::path::Path) {
+            let dir_str = dir.to_string_lossy().to_string();
+            if dir_str.to_lowercase().contains("windowsapps") {
+                return;
+            }
+            #[cfg(windows)]
+            unsafe {
+                let env_subkey = to_wstring("Environment");
+                let val_name = to_wstring("Path");
+                let mut hkey = std::ptr::null_mut();
+                if RegOpenKeyExW(HKEY_CURRENT_USER, env_subkey.as_ptr(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &mut hkey) == 0 {
+                    let mut val_type = 0u32;
+                    let mut size = 0u32;
+                    if RegQueryValueExW(hkey, val_name.as_ptr(), std::ptr::null(), &mut val_type, std::ptr::null_mut(), &mut size) == 0 && size > 0 {
+                        let mut buf: Vec<u16> = vec![0; (size as usize / 2) + 2];
+                        if RegQueryValueExW(hkey, val_name.as_ptr(), std::ptr::null(), &mut val_type, buf.as_mut_ptr() as *mut u8, &mut size) == 0 {
+                            let curr_path = String::from_utf16_lossy(&buf);
+                            let normalized = curr_path.trim_matches('\0');
+                            let contains = normalized.split(';').any(|p| p.trim().eq_ignore_ascii_case(&dir_str));
+                            if !contains {
+                                let new_path = if normalized.is_empty() {
+                                    dir_str.clone()
+                                } else {
+                                    format!("{};{}", normalized.trim_end_matches(';'), dir_str)
+                                };
+                                let w_new = to_wstring(&new_path);
+                                let bytes = (w_new.len() * 2) as u32;
+                                RegSetValueExW(hkey, val_name.as_ptr(), 0, REG_SZ, w_new.as_ptr() as *const u8, bytes);
+                            }
+                        }
+                    }
+                    RegCloseKey(hkey);
+                }
+            }
         }
 
         fn install() -> Result<PathBuf, String> {
@@ -324,7 +371,10 @@ mod win_gui {
                 }
                 let dest = target_dir.join("mtc.exe");
                 match std::fs::copy(&bundled, &dest) {
-                    Ok(_) => return Ok(dest),
+                    Ok(_) => {
+                        Self::ensure_dir_in_user_path(&target_dir);
+                        return Ok(dest);
+                    }
                     Err(e) => last_err = format!("复制失败: {}", e),
                 }
             }
@@ -335,7 +385,7 @@ mod win_gui {
             let mut removed = false;
             for dir in Self::candidate_user_dirs() {
                 let p = dir.join("mtc.exe");
-                if p.exists() && std::fs::remove_file(&p).is_ok() {
+                if p.is_file() && std::fs::remove_file(&p).is_ok() {
                     removed = true;
                 }
             }
@@ -1184,22 +1234,36 @@ mod win_gui {
 
         // 1. CLI 工具子菜单 (mtc)
         let cli_menu: HMENU = CreatePopupMenu();
-        let cli_installed = CliManager::is_installed();
+        let installed_path = CliManager::find_installed_cli();
+        let bundled_path = CliManager::get_bundled_cli_path();
+        let cli_installed = installed_path.is_some();
+        let cli_has_any = cli_installed || bundled_path.is_some();
+
         let cli_status_str = if cli_installed {
-            format!("{}: [OK]", tr(I18nKey::CliStatusInstalled, lang))
+            format!("{}: [全局已就绪]", tr(I18nKey::CliStatusInstalled, lang))
+        } else if bundled_path.is_some() {
+            format!("{}: [开发就绪 (免安装可用)]", tr(I18nKey::CliStatusInstalled, lang))
         } else {
             format!("{}: [未安装]", tr(I18nKey::CliStatusNotInstalled, lang))
         };
         AppendMenuW(cli_menu, MF_STRING, 0, to_wstring(&cli_status_str).as_ptr());
         AppendMenuW(cli_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(cli_menu, MF_STRING, IDM_CLI_INSTALL_USER, to_wstring(tr(I18nKey::CliMenuInstallUser, lang)).as_ptr());
-        if cli_installed {
+
+        if !cli_installed {
+            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_INSTALL_USER, to_wstring(tr(I18nKey::CliMenuInstallUser, lang)).as_ptr());
+        }
+
+        if cli_has_any {
             AppendMenuW(cli_menu, MF_STRING, IDM_CLI_TEST_TERMINAL, to_wstring(tr(I18nKey::CliMenuTest, lang)).as_ptr());
             AppendMenuW(cli_menu, MF_STRING, IDM_CLI_REVEAL, to_wstring(tr(I18nKey::CliMenuReveal, lang)).as_ptr());
+        }
+
+        if cli_installed {
             AppendMenuW(cli_menu, MF_SEPARATOR, 0, std::ptr::null());
             AppendMenuW(cli_menu, MF_STRING, IDM_CLI_UNINSTALL, to_wstring(tr(I18nKey::CliMenuUninstall, lang)).as_ptr());
         }
-        let cli_title = format!("{}: {}", tr(I18nKey::MenuCliTools, lang), if cli_installed { "就绪" } else { "未配置" });
+
+        let cli_title = format!("{}: {}", tr(I18nKey::MenuCliTools, lang), if cli_installed { "已全局就绪" } else if cli_has_any { "开发就绪" } else { "未配置" });
         AppendMenuW(menu, MF_POPUP, cli_menu as usize, to_wstring(&cli_title).as_ptr());
 
         // 2. 排序方式子菜单
@@ -1397,23 +1461,29 @@ mod win_gui {
                     let _ = std::fs::create_dir_all(&dir);
                     let _ = std::fs::write(&path, "# Task Cleaner Configuration\n");
                 }
-                let path_str = path.to_string_lossy().to_string();
-                let wverb = to_wstring("open");
-                let wpath = to_wstring(&path_str);
-                ShellExecuteW(hwnd, wverb.as_ptr(), wpath.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
+                let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("已在记事本中打开配置文件".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CFG_OPEN_DIR => {
                 let dir = WhitelistManager::get_config_dir();
                 let _ = std::fs::create_dir_all(&dir);
-                let dir_str = dir.to_string_lossy().to_string();
-                let wverb = to_wstring("open");
-                let wdir = to_wstring(&dir_str);
-                ShellExecuteW(hwnd, wverb.as_ptr(), wdir.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
+                let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("已在资源管理器中打开配置目录".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CFG_GITHUB => {
                 let wverb = to_wstring("open");
                 let wurl = to_wstring("https://github.com/macos-task-cleaner/windows-task-cleaner-gui");
-                ShellExecuteW(hwnd, wverb.as_ptr(), wurl.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
+                ShellExecuteW(0 as HWND, wverb.as_ptr(), wurl.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
             }
             IDM_CFG_ABOUT => {
                 let caption = to_wstring("Task Cleaner");
@@ -1422,7 +1492,7 @@ mod win_gui {
                     hwnd,
                     msg.as_ptr(),
                     caption.as_ptr(),
-                    MB_OK | MB_ICONINFORMATION,
+                    MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
                 );
             }
             _ => {}
