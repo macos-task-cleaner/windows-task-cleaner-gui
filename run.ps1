@@ -1,4 +1,4 @@
-﻿# Task Cleaner (Windows 11) - Rust Native Run and Dev Script
+# Task Cleaner (Windows 11) - Rust Native Run and Dev Script
 # Dual-licensed under GNU AGPLv3 and Commercial License.
 param (
     [string]$Mode = "gui",
@@ -76,6 +76,9 @@ if ($Mode -eq "cli" -or $Mode -eq "mtc") {
 }
 
 Write-Host "[INFO] Compiling $binName ($configName)..."
+if ($binName -eq "TaskCleaner") {
+    Get-Process -Name "TaskCleaner" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
 if ($configArg) {
     cargo build --bin $binName --release
 } else {

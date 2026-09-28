@@ -7,7 +7,7 @@ fn main() {
 
 #[cfg(windows)]
 mod win_gui {
-    use std::collections::HashSet;
+    use std::collections::HashMap;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,38 +25,100 @@ mod win_gui {
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-        GetStockObject, RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor,
-        DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL,
-        FW_SEMIBOLD, HBITMAP, HBRUSH, HDC, HFONT, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
-        WHITE_BRUSH,
+        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
+        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, RoundRect,
+        SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, DT_CENTER, DT_END_ELLIPSIS,
+        DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL,
+        FW_SEMIBOLD, HBITMAP, HBRUSH, HDC, HFONT, HPEN, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY,
+        TRANSPARENT,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    };
     use windows_sys::Win32::UI::Shell::{
-        Shell_NotifyIconW, APPBARDATA, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
-        NIM_DELETE,
+        ExtractIconExW, Shell_NotifyIconW, APPBARDATA, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
+        NIF_TIP, NIM_ADD, NIM_DELETE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics,
-        GetWindowRect, ICONINFO, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
-        PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowPos, ShowWindow,
-        TrackPopupMenuEx, TranslateMessage, HICON, HMENU, SM_CXSMICON, SM_CYSMICON, SWP_NOACTIVATE,
-        SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-        TPM_RETURNCMD, WM_ACTIVATE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_USER,
-        WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        DestroyIcon, DestroyMenu, DispatchMessageW, DrawIconEx, GetCursorPos, GetMessageW,
+        GetSystemMetrics, LoadCursorW, ICONINFO, IDC_ARROW, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
+        MF_STRING, MSG, PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowPos,
+        ShowWindow, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON, HMENU,
+        SM_CXSMICON, SM_CYSMICON, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, WM_ACTIVATE, WM_COMMAND, WM_CREATE,
+        WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_PAINT, WM_RBUTTONUP, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
+
+    // 菜单 ID 定义
     const IDM_OPEN: usize = 1001;
     const IDM_REFRESH: usize = 1002;
     const IDM_CLEAN_ALL: usize = 1003;
-    const IDM_QUIT: usize = 1004;
+    const IDM_QUIT: usize = 1005;
 
-    const WINDOW_WIDTH: i32 = 360;
-    const WINDOW_HEIGHT: i32 = 500;
+    const IDM_SORT_COMPOSITE: usize = 1101;
+    const IDM_SORT_MEMORY: usize = 1102;
+    const IDM_SORT_CPU: usize = 1103;
+    const IDM_SORT_WINDOWS: usize = 1104;
+    const IDM_SORT_DEFAULT: usize = 1105;
+
+    const IDM_ACTION_GRACEFUL: usize = 1201;
+    const IDM_ACTION_FORCE: usize = 1202;
+
+    const IDM_ROW_WHITELIST_ADD: usize = 1301;
+    const IDM_ROW_WHITELIST_REMOVE: usize = 1302;
+    const IDM_ROW_REVEAL: usize = 1303;
+    const IDM_ROW_COPY_NAME: usize = 1304;
+    const IDM_ROW_COPY_PID: usize = 1305;
+    const IDM_ROW_FORCE_KILL: usize = 1306;
+
+    const IDM_CFG_STARTUP: usize = 1401;
+    const IDM_CFG_RELOAD: usize = 1402;
+    const IDM_CFG_ABOUT: usize = 1403;
+
+    // 窗口尺寸: 严格对齐 macOS 版精修比例 (宽 320, 高 480)
+    const WINDOW_WIDTH: i32 = 320;
+    const WINDOW_HEIGHT: i32 = 480;
+    const VISIBLE_ROWS: usize = 6;
+    const ROW_HEIGHT: i32 = 43;
+
+    // Windows 11 Fluent 2.0 / macOS 拟真色彩规范矩阵 (COLORREF: 0x00BBGGRR)
+    #[inline]
+    const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
+        (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+    }
+
+    const COLOR_CANVAS_BG: COLORREF = rgb(242, 244, 247);
+    const COLOR_CARD_BG: COLORREF = rgb(255, 255, 255);
+    const COLOR_CARD_BORDER: COLORREF = rgb(228, 231, 236);
+    const COLOR_CARD_HOVER: COLORREF = rgb(248, 249, 250);
+    const COLOR_ROW_SEP: COLORREF = rgb(243, 244, 246);
+
+    const COLOR_TEXT_PRIMARY: COLORREF = rgb(26, 26, 26);
+    const COLOR_TEXT_SECONDARY: COLORREF = rgb(107, 114, 128);
+    const COLOR_TEXT_MUTED: COLORREF = rgb(156, 163, 175);
+    const COLOR_ACCENT_BLUE: COLORREF = rgb(0, 120, 215);
+
+    const COLOR_BADGE_BG: COLORREF = rgb(229, 231, 235);
+    const COLOR_BADGE_TEXT: COLORREF = rgb(75, 85, 99);
+
+    const COLOR_STATUS_PENDING_BG: COLORREF = rgb(243, 244, 246);
+    const COLOR_STATUS_PENDING_TEXT: COLORREF = rgb(107, 114, 128);
+    const COLOR_STATUS_READY_BG: COLORREF = rgb(235, 245, 255);
+    const COLOR_STATUS_READY_TEXT: COLORREF = rgb(0, 102, 204);
+
+    const COLOR_HERO_BTN: COLORREF = rgb(229, 231, 235);
+    const COLOR_HERO_BTN_HOVER: COLORREF = rgb(217, 220, 226);
+    const COLOR_BTN_HOVER: COLORREF = rgb(228, 231, 236);
+
+    const COLOR_TAB_BG: COLORREF = rgb(223, 226, 232);
+    const COLOR_TAB_ACTIVE: COLORREF = rgb(0, 120, 215);
+    const COLOR_TAB_INACTIVE_TEXT: COLORREF = rgb(75, 85, 99);
+    const COLOR_TAB_BADGE_INACTIVE: COLORREF = rgb(210, 214, 220);
 
     static IS_VISIBLE: AtomicBool = AtomicBool::new(false);
 
@@ -65,9 +127,27 @@ mod win_gui {
         targets: Vec<AppTarget>,
         protected: Vec<(AppTarget, WhitelistMatch)>,
         sort_mode: SortMode,
-        active_tab: usize, // 0: 待结束, 1: 已保护, 2: 全部
-        status_text: String,
+        active_tab: usize, // 0: 待结束, 1: 已保护, 2: 全部活动
+        scroll_offset: usize,
+        hovered_row: Option<usize>,
+        hovered_btn: Option<HoverButton>,
+        icon_cache: HashMap<String, HICON>,
+        status_message: Option<String>,
         last_scan: Instant,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HoverButton {
+        SortMenu,
+        Refresh,
+        HeroMain,
+        HeroChevron,
+        Tab(usize),
+        RowTrash(usize),
+        RowMore(usize),
+        ViewAllFromEmpty,
+        Settings,
+        Quit,
     }
 
     static STATE: Mutex<Option<GuiState>> = Mutex::new(None);
@@ -76,7 +156,66 @@ mod win_gui {
         OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    /// 动态合成内存图标 (16x16 极简现代胶囊 X 几何图标，规避文件缺失)
+    /// 应用名本地化与友好解析 (告别裸露的 .exe 粗糙毛胚感)
+    fn resolve_friendly_name(app: &AppTarget) -> String {
+        let name_lower = app.name.to_lowercase();
+        match name_lower.as_str() {
+            "explorer.exe" | "explorer" => "Windows 资源管理器".to_string(),
+            "chrome.exe" => "Google Chrome".to_string(),
+            "msedge.exe" => "Microsoft Edge".to_string(),
+            "code.exe" => "Visual Studio Code".to_string(),
+            "devenv.exe" => "Visual Studio".to_string(),
+            "windowsterminal.exe" | "wt.exe" => "Windows 终端".to_string(),
+            "powershell.exe" => "Windows PowerShell".to_string(),
+            "pwsh.exe" => "PowerShell 7".to_string(),
+            "cmd.exe" => "命令提示符".to_string(),
+            "notepad.exe" => "记事本".to_string(),
+            "taskmgr.exe" => "任务管理器".to_string(),
+            "wechat.exe" => "微信".to_string(),
+            "qq.exe" => "QQ".to_string(),
+            "feishu.exe" | "lark.exe" => "飞书".to_string(),
+            "dingtalk.exe" => "钉钉".to_string(),
+            "telegram.exe" => "Telegram".to_string(),
+            "discord.exe" => "Discord".to_string(),
+            "spotify.exe" => "Spotify".to_string(),
+            "steam.exe" => "Steam".to_string(),
+            _ => {
+                let clean_title = app.title.trim();
+                if !clean_title.is_empty() && clean_title.chars().count() <= 20 {
+                    clean_title.to_string()
+                } else if let Some(stem) = std::path::Path::new(&app.name).file_stem().and_then(|s| s.to_str()) {
+                    stem.to_string()
+                } else {
+                    app.name.clone()
+                }
+            }
+        }
+    }
+
+    /// 提取真实高分辨率应用图标 (Win32 Shell ExtractIconEx)
+    unsafe fn get_app_icon(exe_path: &str, cache: &mut HashMap<String, HICON>) -> Option<HICON> {
+        if exe_path.is_empty() {
+            return None;
+        }
+
+        if let Some(&h) = cache.get(exe_path) {
+            return if h != 0 as HICON { Some(h) } else { None };
+        }
+
+        let wpath = to_wstring(exe_path);
+        let mut h_small: HICON = 0 as HICON;
+        let count = ExtractIconExW(wpath.as_ptr(), 0, std::ptr::null_mut(), &mut h_small, 1);
+
+        if count > 0 && h_small != 0 as HICON {
+            cache.insert(exe_path.to_string(), h_small);
+            Some(h_small)
+        } else {
+            cache.insert(exe_path.to_string(), 0 as HICON);
+            None
+        }
+    }
+
+    /// 动态合成现代极简胶囊 X 几何托盘图标 (无外部资源依赖，100% 独立稳定)
     unsafe fn create_default_tray_icon() -> HICON {
         let cx = GetSystemMetrics(SM_CXSMICON);
         let cy = GetSystemMetrics(SM_CYSMICON);
@@ -86,18 +225,12 @@ mod win_gui {
         let hbm_mask = CreateCompatibleBitmap(hdc, cx, cy);
 
         let h_old = SelectObject(hdc, hbm_color);
-        let bg_brush = CreateSolidBrush(0x0078D4); // 经典深蓝点缀色
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: cx,
-            bottom: cy,
-        };
+        let bg_brush = CreateSolidBrush(COLOR_ACCENT_BLUE);
+        let rect = RECT { left: 0, top: 0, right: cx, bottom: cy };
         FillRect(hdc, &rect, bg_brush);
         DeleteObject(bg_brush);
 
-        // 绘制白色小方框作为中心图案
-        let fg_brush = CreateSolidBrush(0xFFFFFF);
+        let fg_brush = CreateSolidBrush(rgb(255, 255, 255));
         let inner_rect = RECT {
             left: cx / 4,
             top: cy / 4,
@@ -124,6 +257,51 @@ mod win_gui {
         h_icon
     }
 
+    /// 高精度圆角矩形渲染助手 (彻底杜绝 GDI 默认粗黑边框，打造 Apple/Fluent 2.0 质感)
+    unsafe fn draw_rounded_box(
+        hdc: HDC,
+        rect: &RECT,
+        radius: i32,
+        fill_color: COLORREF,
+        border_color: Option<COLORREF>,
+    ) {
+        let brush = CreateSolidBrush(fill_color);
+        let pen = if let Some(b) = border_color {
+            CreatePen(PS_SOLID, 1, b)
+        } else {
+            CreatePen(PS_NULL, 0, 0)
+        };
+        let old_brush = SelectObject(hdc, brush);
+        let old_pen = SelectObject(hdc, pen);
+
+        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+    }
+
+    /// 高精度字体创建器
+    unsafe fn create_font(size_pt: i32, weight: i32) -> HFONT {
+        CreateFontW(
+            -size_pt,
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            1, // DEFAULT_CHARSET
+            0,
+            0,
+            CLEARTYPE_QUALITY,
+            0,
+            to_wstring("Segoe UI Variable Text").as_ptr(),
+        )
+    }
+
     fn refresh_scan() {
         let mut state_guard = STATE.lock().unwrap();
         if let Some(state) = state_guard.as_mut() {
@@ -145,12 +323,12 @@ mod win_gui {
 
             state.targets = targets;
             state.protected = protected;
+            state.scroll_offset = 0;
             state.last_scan = Instant::now();
-            state.status_text = format!("扫描完成 (共 {} 个前台任务)", state.targets.len() + state.protected.len());
         }
     }
 
-    /// 根据当前任务栏托盘位置，自动锚定吸附在托盘正上方
+    /// 锚定窗口吸附在任务栏托盘正上方
     unsafe fn position_above_tray(hwnd: HWND) {
         let mut data: APPBARDATA = std::mem::zeroed();
         data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
@@ -161,12 +339,11 @@ mod win_gui {
         );
 
         let (x, y) = if res != 0 {
-            // uEdge: 0 = Left, 1 = Top, 2 = Right, 3 = Bottom (Win11 常见)
             match data.uEdge {
-                1 => (data.rc.right - WINDOW_WIDTH - 16, data.rc.bottom + 12),
-                0 => (data.rc.right + 12, data.rc.bottom - WINDOW_HEIGHT - 12),
-                2 => (data.rc.left - WINDOW_WIDTH - 12, data.rc.bottom - WINDOW_HEIGHT - 12),
-                _ => (data.rc.right - WINDOW_WIDTH - 16, data.rc.top - WINDOW_HEIGHT - 12),
+                1 => (data.rc.right - WINDOW_WIDTH - 12, data.rc.bottom + 8),
+                0 => (data.rc.right + 8, data.rc.bottom - WINDOW_HEIGHT - 12),
+                2 => (data.rc.left - WINDOW_WIDTH - 8, data.rc.bottom - WINDOW_HEIGHT - 12),
+                _ => (data.rc.right - WINDOW_WIDTH - 12, data.rc.top - WINDOW_HEIGHT - 8),
             }
         } else {
             (1920 - WINDOW_WIDTH - 20, 1080 - WINDOW_HEIGHT - 60)
@@ -188,16 +365,11 @@ mod win_gui {
         GetCursorPos(&mut pt);
 
         let menu: HMENU = CreatePopupMenu();
-        let open_text = to_wstring("打开 Task Cleaner");
-        let refresh_text = to_wstring("扫描刷新");
-        let clean_text = to_wstring("一键清理待结束任务");
-        let quit_text = to_wstring("退出");
-
-        AppendMenuW(menu, MF_STRING, IDM_OPEN, open_text.as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_REFRESH, refresh_text.as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_CLEAN_ALL, clean_text.as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_OPEN, to_wstring("打开 Task Cleaner").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_REFRESH, to_wstring("重新扫描").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_CLEAN_ALL, to_wstring("清理未受保护任务").as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_QUIT, quit_text.as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_QUIT, to_wstring("退出").as_ptr());
 
         SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenuEx(
@@ -219,7 +391,7 @@ mod win_gui {
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_CLEAN_ALL => {
-                execute_clean_all();
+                execute_clean_all(TerminationMode::Standard);
                 refresh_scan();
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
@@ -230,7 +402,210 @@ mod win_gui {
         }
     }
 
-    fn execute_clean_all() {
+    unsafe fn show_sort_menu(hwnd: HWND, x: i32, y: i32) {
+        let cur_mode = STATE.lock().unwrap().as_ref().map(|s| s.sort_mode).unwrap_or_default();
+        let menu: HMENU = CreatePopupMenu();
+
+        let add_item = |m: HMENU, id: usize, title: &str, checked: bool| {
+            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
+            AppendMenuW(m, flags, id, to_wstring(title).as_ptr());
+        };
+
+        add_item(menu, IDM_SORT_COMPOSITE, "综合负载", cur_mode == SortMode::Composite);
+        add_item(menu, IDM_SORT_MEMORY, "内存占用", cur_mode == SortMode::Memory);
+        add_item(menu, IDM_SORT_CPU, "CPU 占用", cur_mode == SortMode::Cpu);
+        add_item(menu, IDM_SORT_WINDOWS, "窗口数量", cur_mode == SortMode::Windows);
+        add_item(menu, IDM_SORT_DEFAULT, "默认字母", cur_mode == SortMode::Default);
+
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenuEx(
+            menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+            x,
+            y,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+
+        let new_mode = match cmd as usize {
+            IDM_SORT_COMPOSITE => Some(SortMode::Composite),
+            IDM_SORT_MEMORY => Some(SortMode::Memory),
+            IDM_SORT_CPU => Some(SortMode::Cpu),
+            IDM_SORT_WINDOWS => Some(SortMode::Windows),
+            IDM_SORT_DEFAULT => Some(SortMode::Default),
+            _ => None,
+        };
+
+        if let Some(mode) = new_mode {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.sort_mode = mode;
+                sort_targets(&mut state.targets, mode);
+            }
+            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+        }
+    }
+
+    unsafe fn show_action_chevron_menu(hwnd: HWND, x: i32, y: i32) {
+        let menu: HMENU = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, IDM_ACTION_GRACEFUL, to_wstring("常规结束 (标准模式)").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ACTION_FORCE, to_wstring("强制结束 (彻底清理)").as_ptr());
+
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenuEx(
+            menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+            x,
+            y,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+
+        match cmd as usize {
+            IDM_ACTION_GRACEFUL => {
+                execute_clean_all(TerminationMode::Standard);
+                refresh_scan();
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_ACTION_FORCE => {
+                execute_clean_all(TerminationMode::Force);
+                refresh_scan();
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            _ => {}
+        }
+    }
+
+    unsafe fn show_row_more_menu(hwnd: HWND, x: i32, y: i32, actual_idx: usize, is_protected_tab: bool) {
+        let mut app_info = None;
+        {
+            let state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_ref() {
+                if is_protected_tab {
+                    if actual_idx < state.protected.len() {
+                        app_info = Some((state.protected[actual_idx].0.clone(), true));
+                    }
+                } else {
+                    if actual_idx < state.targets.len() {
+                        app_info = Some((state.targets[actual_idx].clone(), false));
+                    }
+                }
+            }
+        }
+
+        let (app, is_protected) = match app_info {
+            Some(v) => v,
+            None => return,
+        };
+
+        let menu: HMENU = CreatePopupMenu();
+        if is_protected {
+            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_REMOVE, to_wstring("移出保护名单").as_ptr());
+        } else {
+            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_ADD, to_wstring("加入保护名单").as_ptr());
+            AppendMenuW(menu, MF_STRING, IDM_ROW_FORCE_KILL, to_wstring("强制结束任务").as_ptr());
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_REVEAL, to_wstring("在资源管理器中显示").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_NAME, to_wstring("复制进程名称").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PID, to_wstring("复制 PID").as_ptr());
+
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenuEx(
+            menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+            x,
+            y,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+
+        match cmd as usize {
+            IDM_ROW_WHITELIST_ADD => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.whitelist.add_user_rule(&app.name);
+                }
+                drop(state_guard);
+                refresh_scan();
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_ROW_WHITELIST_REMOVE => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.whitelist.remove_user_rule(&app.name);
+                }
+                drop(state_guard);
+                refresh_scan();
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_ROW_FORCE_KILL => {
+                tiered_terminate(&[app], TerminationMode::Force, 0, &WhitelistManager::new());
+                refresh_scan();
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_ROW_REVEAL => {
+                if !app.exe_path.is_empty() {
+                    let _ = std::process::Command::new("explorer.exe")
+                        .arg(format!("/select,{}", app.exe_path))
+                        .spawn();
+                }
+            }
+            IDM_ROW_COPY_NAME => {
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Set-Clipboard -Value '{}'", app.name)])
+                    .spawn();
+            }
+            IDM_ROW_COPY_PID => {
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Set-Clipboard -Value '{}'", app.pid)])
+                    .spawn();
+            }
+            _ => {}
+        }
+    }
+
+    unsafe fn show_settings_menu(hwnd: HWND, x: i32, y: i32) {
+        let menu: HMENU = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, IDM_CFG_STARTUP, to_wstring("开机自启动设置").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_CFG_RELOAD, to_wstring("重新加载白名单规则").as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring("关于 Task Cleaner (Windows 11)").as_ptr());
+
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenuEx(
+            menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+            x,
+            y,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+
+        match cmd as usize {
+            IDM_CFG_RELOAD => {
+                refresh_scan();
+                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_ABOUT => {
+                let caption = to_wstring("Task Cleaner");
+                let msg = to_wstring("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n\n轻量优雅的一体化前台任务管理与内存释放套件。");
+                windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                    hwnd,
+                    msg.as_ptr(),
+                    caption.as_ptr(),
+                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_clean_all(mode: TerminationMode) {
         let mut state_guard = STATE.lock().unwrap();
         if let Some(state) = state_guard.as_mut() {
             if state.targets.is_empty() {
@@ -238,14 +613,14 @@ mod win_gui {
             }
             let report = tiered_terminate(
                 &state.targets,
-                TerminationMode::Standard,
+                mode,
                 400,
                 &state.whitelist,
             );
-            state.status_text = format!(
-                "已结束 {} 个任务 (释放内存)",
+            state.status_message = Some(format!(
+                "已结束 {} 个任务",
                 report.terminated_graceful + report.terminated_force
-            );
+            ));
         }
     }
 
@@ -264,217 +639,390 @@ mod win_gui {
         }
     }
 
+    /// 高精度 Windows 11 Fluent 2.0 拟真材质渲染管道 (100% 对齐 macOS 极简美学)
     unsafe fn draw_ui(hwnd: HWND, hdc: HDC) {
         let mut client_rect: RECT = std::mem::zeroed();
         windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client_rect);
 
-        // 双缓冲内存 DC 渲染，彻底消除高频闪烁
         let mem_dc = CreateCompatibleDC(hdc);
         let mem_bmp = CreateCompatibleBitmap(hdc, client_rect.right, client_rect.bottom);
         let old_bmp = SelectObject(mem_dc, mem_bmp);
 
-        // 1. 绘制 Windows 11 Fluent 浅灰/亚克力背景
-        let bg_brush = CreateSolidBrush(0xFAFAFA);
+        // 1. 底板画布: 极简纯净的银灰底板
+        let bg_brush = CreateSolidBrush(COLOR_CANVAS_BG);
         FillRect(mem_dc, &client_rect, bg_brush);
         DeleteObject(bg_brush);
 
-        let font_title = CreateFontW(
-            17, 0, 0, 0, FW_SEMIBOLD as i32, 0, 0, 0, 0, 0, 0, 0, 0,
-            to_wstring("Segoe UI Variable Display").as_ptr(),
-        );
-        let font_body = CreateFontW(
-            14, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0, 0, 0, 0, 0, 0,
-            to_wstring("Segoe UI Variable Text").as_ptr(),
-        );
-        let font_small = CreateFontW(
-            12, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0, 0, 0, 0, 0, 0,
-            to_wstring("Segoe UI Variable Text").as_ptr(),
-        );
+        // 字体矩阵: 采用 Windows 11 Segoe UI Variable 家族与 ClearType
+        let font_title = create_font(15, FW_BOLD as i32);
+        let font_card_title = create_font(13, FW_SEMIBOLD as i32);
+        let font_body = create_font(12, FW_MEDIUM as i32);
+        let font_sub = create_font(10, FW_NORMAL as i32);
+        let font_badge = create_font(9, FW_SEMIBOLD as i32);
 
         SetBkMode(mem_dc, TRANSPARENT as i32);
 
-        let state_guard = STATE.lock().unwrap();
-        if let Some(state) = state_guard.as_ref() {
-            // 2. 顶栏: 标题与状态徽章
+        let mut state_guard = STATE.lock().unwrap();
+        if let Some(state) = state_guard.as_mut() {
+            let hovered_btn = state.hovered_btn;
+            let total_running = state.targets.len() + state.protected.len();
+
+            // ----------------------------------------------------
+            // 2. 顶栏 (Header)
+            // ----------------------------------------------------
+            // 标题: Task Cleaner
             SelectObject(mem_dc, font_title);
-            SetTextColor(mem_dc, 0x1A1A1A);
-            let mut title_rect = RECT {
-                left: 16,
-                top: 14,
-                right: 180,
-                bottom: 38,
-            };
+            SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
+            let mut title_rect = RECT { left: 14, top: 12, right: 110, bottom: 36 };
             let title_text = to_wstring("Task Cleaner");
             DrawTextW(mem_dc, title_text.as_ptr(), -1, &mut title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-            // 徽章
-            SelectObject(mem_dc, font_small);
-            let badge_bg = CreateSolidBrush(0xF0E4D4);
-            let badge_rect = RECT {
-                left: 130,
-                top: 16,
-                right: 215,
-                bottom: 36,
-            };
-            RoundRect(mem_dc, badge_rect.left, badge_rect.top, badge_rect.right, badge_rect.bottom, 10, 10);
-            DeleteObject(badge_bg);
-            SetTextColor(mem_dc, 0xD47800);
-            let badge_text = to_wstring(&format!("{} 运行中", state.targets.len() + state.protected.len()));
+            // 运行中胶囊徽章 (Pill Badge: [9 运行中])
+            let badge_rect = RECT { left: 112, top: 15, right: 182, bottom: 33 };
+            draw_rounded_box(mem_dc, &badge_rect, 10, COLOR_BADGE_BG, None);
+            SelectObject(mem_dc, font_badge);
+            SetTextColor(mem_dc, COLOR_BADGE_TEXT);
             let mut b_text_rect = badge_rect;
+            let badge_text = to_wstring(&format!("{} 运行中", total_running));
             DrawTextW(mem_dc, badge_text.as_ptr(), -1, &mut b_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            // 3. 核心卡片 (Action Card)
-            let card_rect = RECT {
-                left: 14,
-                top: 48,
-                right: WINDOW_WIDTH - 14,
-                bottom: 114,
-            };
-            let card_brush = CreateSolidBrush(0xFFFFFF);
-            SelectObject(mem_dc, card_brush);
-            RoundRect(mem_dc, card_rect.left, card_rect.top, card_rect.right, card_rect.bottom, 12, 12);
-            DeleteObject(card_brush);
-
+            // 排序按钮 [↕]
+            let sort_rect = RECT { left: 260, top: 13, right: 282, bottom: 35 };
+            let is_sort_hover = hovered_btn == Some(HoverButton::SortMenu);
+            if is_sort_hover {
+                draw_rounded_box(mem_dc, &sort_rect, 6, COLOR_BTN_HOVER, None);
+            }
             SelectObject(mem_dc, font_body);
-            SetTextColor(mem_dc, 0x222222);
-            let mut card_title = RECT {
-                left: 26,
-                top: 58,
-                right: 230,
-                bottom: 78,
-            };
-            let card_title_txt = to_wstring(&format!("{} 个待清理任务", state.targets.len()));
+            SetTextColor(mem_dc, if is_sort_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
+            let mut s_rect = sort_rect;
+            let sort_icon = to_wstring("↕");
+            DrawTextW(mem_dc, sort_icon.as_ptr(), -1, &mut s_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // 刷新按钮 [↻]
+            let ref_rect = RECT { left: 286, top: 13, right: 308, bottom: 35 };
+            let is_ref_hover = hovered_btn == Some(HoverButton::Refresh);
+            if is_ref_hover {
+                draw_rounded_box(mem_dc, &ref_rect, 6, COLOR_BTN_HOVER, None);
+            }
+            SelectObject(mem_dc, font_body);
+            SetTextColor(mem_dc, if is_ref_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
+            let mut r_rect = ref_rect;
+            let ref_icon = to_wstring("↻");
+            DrawTextW(mem_dc, ref_icon.as_ptr(), -1, &mut r_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // ----------------------------------------------------
+            // 3. 核心卡片 (Hero Action Card)
+            // ----------------------------------------------------
+            let card_rect = RECT { left: 12, top: 42, right: 308, bottom: 130 };
+            draw_rounded_box(mem_dc, &card_rect, 10, COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
+
+            let has_targets = !state.targets.is_empty();
+
+            // 卡片标题与副标题
+            SelectObject(mem_dc, font_card_title);
+            SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
+            let mut card_title = RECT { left: 24, top: 50, right: 230, bottom: 70 };
+            let card_title_txt = to_wstring(if has_targets {
+                &format!("{} 个待结束应用", state.targets.len())
+            } else {
+                "全部应用已保护"
+            });
             DrawTextW(mem_dc, card_title_txt.as_ptr(), -1, &mut card_title, DT_LEFT | DT_SINGLELINE);
 
-            SelectObject(mem_dc, font_small);
-            SetTextColor(mem_dc, 0x777777);
-            let mut card_sub = RECT {
-                left: 26,
-                top: 80,
-                right: 230,
-                bottom: 98,
-            };
-            let total_mem: f64 = state.targets.iter().map(|t| t.memory_mb()).sum();
-            let card_sub_txt = to_wstring(&format!("释放约 {:.0} MB 内存", total_mem));
+            SelectObject(mem_dc, font_sub);
+            SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
+            let mut card_sub = RECT { left: 24, top: 70, right: 230, bottom: 86 };
+            let card_sub_txt = to_wstring(if let Some(msg) = &state.status_message {
+                msg.as_str()
+            } else if has_targets {
+                "结束未受保护的前台应用"
+            } else {
+                "当前前台无待清理的任务"
+            });
             DrawTextW(mem_dc, card_sub_txt.as_ptr(), -1, &mut card_sub, DT_LEFT | DT_SINGLELINE);
 
-            // 一键清理按钮
-            let btn_rect = RECT {
-                left: WINDOW_WIDTH - 110,
-                top: 62,
-                right: WINDOW_WIDTH - 24,
-                bottom: 100,
-            };
-            let btn_brush = CreateSolidBrush(if state.targets.is_empty() { 0xCCCCCC } else { 0x0078D4 });
-            SelectObject(mem_dc, btn_brush);
-            RoundRect(mem_dc, btn_rect.left, btn_rect.top, btn_rect.right, btn_rect.bottom, 10, 10);
-            DeleteObject(btn_brush);
-            SetTextColor(mem_dc, 0xFFFFFF);
-            SelectObject(mem_dc, font_body);
-            let mut btn_txt_rect = btn_rect;
-            let btn_text = to_wstring(if state.targets.is_empty() { "无需清理" } else { "一键结束" });
-            DrawTextW(mem_dc, btn_text.as_ptr(), -1, &mut btn_txt_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            // 右上角状态胶囊标签 (待处理 / 已就绪)
+            let tag_rect = RECT { left: 248, top: 50, right: 296, bottom: 68 };
+            let tag_bg = if has_targets { COLOR_STATUS_PENDING_BG } else { COLOR_STATUS_READY_BG };
+            let tag_fg = if has_targets { COLOR_STATUS_PENDING_TEXT } else { COLOR_STATUS_READY_TEXT };
+            draw_rounded_box(mem_dc, &tag_rect, 9, tag_bg, None);
+            SelectObject(mem_dc, font_badge);
+            SetTextColor(mem_dc, tag_fg);
+            let mut tr_rect = tag_rect;
+            let tag_txt = to_wstring(if has_targets { "待处理" } else { "已就绪" });
+            DrawTextW(mem_dc, tag_txt.as_ptr(), -1, &mut tr_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            // 4. 分段选项卡 (待结束 | 已保护 | 全部)
-            SelectObject(mem_dc, font_small);
-            let tabs = ["待结束", "已保护", "全部"];
-            for (idx, &tab_label) in tabs.iter().enumerate() {
-                let tab_x = 16 + (idx as i32 * 68);
+            // 核心操作按钮组: 结束大按钮 + 选项下拉箭头
+            let btn_main_rect = RECT { left: 22, top: 90, right: if has_targets { 268 } else { 298 }, bottom: 122 };
+            let is_main_hover = hovered_btn == Some(HoverButton::HeroMain);
+            let main_btn_bg = if !has_targets {
+                COLOR_STATUS_PENDING_BG
+            } else if is_main_hover {
+                COLOR_HERO_BTN_HOVER
+            } else {
+                COLOR_HERO_BTN
+            };
+            draw_rounded_box(mem_dc, &btn_main_rect, 6, main_btn_bg, None);
+
+            SelectObject(mem_dc, font_body);
+            SetTextColor(mem_dc, if has_targets { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
+            let mut bm_text_rect = btn_main_rect;
+            let btn_text = to_wstring(if has_targets { "⊗ 结束" } else { "✓ 就绪" });
+            DrawTextW(mem_dc, btn_text.as_ptr(), -1, &mut bm_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // 下拉小箭头 (仅当有待结束任务时显示)
+            if has_targets {
+                let btn_chev_rect = RECT { left: 272, top: 90, right: 298, bottom: 122 };
+                let is_chev_hover = hovered_btn == Some(HoverButton::HeroChevron);
+                let chev_bg = if is_chev_hover { COLOR_HERO_BTN_HOVER } else { COLOR_HERO_BTN };
+                draw_rounded_box(mem_dc, &btn_chev_rect, 6, chev_bg, None);
+                SelectObject(mem_dc, font_sub);
+                SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
+                let mut bc_text_rect = btn_chev_rect;
+                let chev_txt = to_wstring("˅");
+                DrawTextW(mem_dc, chev_txt.as_ptr(), -1, &mut bc_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+
+            // ----------------------------------------------------
+            // 4. 分段选择器 (Segmented Tab Bar)
+            // ----------------------------------------------------
+            let tab_container = RECT { left: 12, top: 138, right: 308, bottom: 166 };
+            draw_rounded_box(mem_dc, &tab_container, 8, COLOR_TAB_BG, None);
+
+            let tab_items = [
+                ("待结束", state.targets.len()),
+                ("已保护", state.protected.len()),
+                ("全部活动", total_running),
+            ];
+
+            let tab_w = (296 - 4) / 3;
+            for (idx, (tab_title, count)) in tab_items.iter().enumerate() {
+                let tx = 14 + (idx as i32 * tab_w);
                 let tab_rect = RECT {
-                    left: tab_x,
-                    top: 122,
-                    right: tab_x + 62,
-                    bottom: 144,
+                    left: tx,
+                    top: 140,
+                    right: tx + tab_w - 2,
+                    bottom: 164,
                 };
                 let is_active = state.active_tab == idx;
-                let t_brush = CreateSolidBrush(if is_active { 0xEAEAEA } else { 0xFAFAFA });
-                SelectObject(mem_dc, t_brush);
-                RoundRect(mem_dc, tab_rect.left, tab_rect.top, tab_rect.right, tab_rect.bottom, 8, 8);
-                DeleteObject(t_brush);
-                SetTextColor(mem_dc, if is_active { 0x0078D4 } else { 0x555555 });
-                let mut tr = tab_rect;
-                let tw = to_wstring(tab_label);
-                DrawTextW(mem_dc, tw.as_ptr(), -1, &mut tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                let is_tab_hover = hovered_btn == Some(HoverButton::Tab(idx));
+
+                if is_active {
+                    draw_rounded_box(mem_dc, &tab_rect, 6, COLOR_TAB_ACTIVE, None);
+                } else if is_tab_hover {
+                    draw_rounded_box(mem_dc, &tab_rect, 6, COLOR_BTN_HOVER, None);
+                }
+
+                // 绘制 Tab 标题文本
+                SelectObject(mem_dc, font_sub);
+                SetTextColor(mem_dc, if is_active { rgb(255, 255, 255) } else { COLOR_TAB_INACTIVE_TEXT });
+                let mut t_text_rect = RECT {
+                    left: tab_rect.left + 4,
+                    top: tab_rect.top,
+                    right: tab_rect.right - 24,
+                    bottom: tab_rect.bottom,
+                };
+                let tw = to_wstring(tab_title);
+                DrawTextW(mem_dc, tw.as_ptr(), -1, &mut t_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                // 绘制 Tab 数量小胶囊徽章
+                let badge_pill = RECT {
+                    left: tab_rect.right - 22,
+                    top: tab_rect.top + 4,
+                    right: tab_rect.right - 4,
+                    bottom: tab_rect.bottom - 4,
+                };
+                let pill_bg = if is_active {
+                    rgb(30, 144, 255) // 高亮白色半透感淡蓝
+                } else {
+                    COLOR_TAB_BADGE_INACTIVE
+                };
+                draw_rounded_box(mem_dc, &badge_pill, 6, pill_bg, None);
+                SelectObject(mem_dc, font_badge);
+                SetTextColor(mem_dc, if is_active { rgb(255, 255, 255) } else { COLOR_TAB_INACTIVE_TEXT });
+                let mut bp_rect = badge_pill;
+                let count_txt = to_wstring(&count.to_string());
+                DrawTextW(mem_dc, count_txt.as_ptr(), -1, &mut bp_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
 
-            // 5. 应用列表区
-            let items: Vec<&AppTarget> = match state.active_tab {
-                1 => state.protected.iter().map(|(a, _)| a).collect(),
-                2 => state.targets.iter().chain(state.protected.iter().map(|(a, _)| a)).collect(),
-                _ => state.targets.iter().collect(),
+            // ----------------------------------------------------
+            // 5. 应用列表区 (List Container Card)
+            // ----------------------------------------------------
+            let list_container = RECT { left: 12, top: 174, right: 308, bottom: 434 };
+            draw_rounded_box(mem_dc, &list_container, 10, COLOR_CARD_BG, Some(COLOR_CARD_BORDER));
+
+            let items: Vec<(&AppTarget, bool)> = match state.active_tab {
+                1 => state.protected.iter().map(|(a, _)| (a, true)).collect(),
+                2 => state.targets.iter().map(|a| (a, false)).chain(state.protected.iter().map(|(a, _)| (a, true))).collect(),
+                _ => state.targets.iter().map(|a| (a, false)).collect(),
             };
 
-            let mut y = 152;
-            let max_show = 6;
-            for (i, app) in items.iter().take(max_show).enumerate() {
-                let row_rect = RECT {
-                    left: 14,
-                    top: y,
-                    right: WINDOW_WIDTH - 14,
-                    bottom: y + 46,
-                };
-                let row_brush = CreateSolidBrush(0xFFFFFF);
-                SelectObject(mem_dc, row_brush);
-                RoundRect(mem_dc, row_rect.left, row_rect.top, row_rect.right, row_rect.bottom, 8, 8);
-                DeleteObject(row_brush);
+            if items.is_empty() {
+                // 空状态优雅占位展示
+                SelectObject(mem_dc, font_title);
+                SetTextColor(mem_dc, COLOR_ACCENT_BLUE);
+                let mut check_rect = RECT { left: 12, top: 220, right: 308, bottom: 250 };
+                let check_txt = to_wstring("✓");
+                DrawTextW(mem_dc, check_txt.as_ptr(), -1, &mut check_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-                // 名称
-                SelectObject(mem_dc, font_body);
-                SetTextColor(mem_dc, 0x222222);
-                let mut name_rect = RECT {
-                    left: 24,
-                    top: y + 5,
-                    right: 210,
-                    bottom: y + 24,
-                };
-                let name_txt = to_wstring(&app.name);
-                DrawTextW(mem_dc, name_txt.as_ptr(), -1, &mut name_rect, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE);
+                SelectObject(mem_dc, font_card_title);
+                SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
+                let mut empty_title = RECT { left: 12, top: 255, right: 308, bottom: 275 };
+                let empty_title_txt = to_wstring("无需清理");
+                DrawTextW(mem_dc, empty_title_txt.as_ptr(), -1, &mut empty_title, DT_CENTER | DT_SINGLELINE);
 
-                // 指标
-                SelectObject(mem_dc, font_small);
-                SetTextColor(mem_dc, 0x888888);
-                let mut metric_rect = RECT {
-                    left: 24,
-                    top: y + 25,
-                    right: 210,
-                    bottom: y + 42,
-                };
-                let metric_txt = to_wstring(&app.metrics_display());
-                DrawTextW(mem_dc, metric_txt.as_ptr(), -1, &mut metric_rect, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE);
+                SelectObject(mem_dc, font_sub);
+                SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
+                let mut empty_sub = RECT { left: 12, top: 278, right: 308, bottom: 295 };
+                let empty_sub_txt = to_wstring("所有前台应用均受规则保护");
+                DrawTextW(mem_dc, empty_sub_txt.as_ptr(), -1, &mut empty_sub, DT_CENTER | DT_SINGLELINE);
 
-                // 单项结束按钮
-                let row_btn = RECT {
-                    left: WINDOW_WIDTH - 64,
-                    top: y + 10,
-                    right: WINDOW_WIDTH - 24,
-                    bottom: y + 36,
-                };
-                let r_btn_brush = CreateSolidBrush(0xF0F0F0);
-                SelectObject(mem_dc, r_btn_brush);
-                RoundRect(mem_dc, row_btn.left, row_btn.top, row_btn.right, row_btn.bottom, 6, 6);
-                DeleteObject(r_btn_brush);
-                SetTextColor(mem_dc, 0x333333);
-                let mut r_txt_rect = row_btn;
-                let r_btn_txt = to_wstring("结束");
-                DrawTextW(mem_dc, r_btn_txt.as_ptr(), -1, &mut r_txt_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                // 查看全部活动胶囊按钮
+                let view_all_rect = RECT { left: 100, top: 310, right: 220, bottom: 334 };
+                let is_va_hover = hovered_btn == Some(HoverButton::ViewAllFromEmpty);
+                draw_rounded_box(mem_dc, &view_all_rect, 12, if is_va_hover { COLOR_HERO_BTN_HOVER } else { COLOR_HERO_BTN }, None);
+                SelectObject(mem_dc, font_sub);
+                SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
+                let mut va_text_rect = view_all_rect;
+                let va_txt = to_wstring(&format!("查看全部活动 ({})", total_running));
+                DrawTextW(mem_dc, va_txt.as_ptr(), -1, &mut va_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            } else {
+                let scroll = state.scroll_offset;
+                for i in 0..VISIBLE_ROWS {
+                    let actual_idx = scroll + i;
+                    if actual_idx >= items.len() {
+                        break;
+                    }
+                    let (app, is_protected) = items[actual_idx];
+                    let y = 175 + (i as i32 * ROW_HEIGHT);
+                    let row_rect = RECT {
+                        left: 14,
+                        top: y,
+                        right: 306,
+                        bottom: y + ROW_HEIGHT,
+                    };
 
-                y += 52;
+                    let is_row_hover = state.hovered_row == Some(i);
+                    if is_row_hover {
+                        let r_bg = CreateSolidBrush(COLOR_CARD_HOVER);
+                        FillRect(mem_dc, &row_rect, r_bg);
+                        DeleteObject(r_bg);
+                    }
+
+                    // 1. 真实高清应用图标
+                    let icon_opt = get_app_icon(&app.exe_path, &mut state.icon_cache);
+                    if let Some(h_icon) = icon_opt {
+                        DrawIconEx(mem_dc, 22, y + 8, h_icon, 24, 24, 0, 0 as HBRUSH, DI_NORMAL);
+                    } else {
+                        let def_rect = RECT { left: 22, top: y + 8, right: 46, bottom: y + 32 };
+                        draw_rounded_box(mem_dc, &def_rect, 5, COLOR_STATUS_PENDING_BG, None);
+                    }
+
+                    // 2. 应用主名称 (解析后的友好名称)
+                    SelectObject(mem_dc, font_body);
+                    SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
+                    let mut name_rect = RECT { left: 52, top: y + 4, right: 248, bottom: y + 22 };
+                    let friendly_name = resolve_friendly_name(app);
+                    let name_txt = to_wstring(&friendly_name);
+                    DrawTextW(mem_dc, name_txt.as_ptr(), -1, &mut name_rect, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+                    // 3. 进程详细指标 (chrome.exe · 154 MB · 2 窗口)
+                    SelectObject(mem_dc, font_sub);
+                    SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
+                    let mut sub_rect = RECT { left: 52, top: y + 22, right: 248, bottom: y + 38 };
+                    let sub_txt = to_wstring(&format!(
+                        "{} · {:.0} MB · {} 窗口",
+                        app.name,
+                        app.memory_mb(),
+                        app.window_count
+                    ));
+                    DrawTextW(mem_dc, sub_txt.as_ptr(), -1, &mut sub_rect, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+                    // 4. 右侧操作按钮组
+                    if !is_protected {
+                        // 结束按钮 (垃圾桶小图标)
+                        let trash_rect = RECT { left: 256, top: y + 10, right: 278, bottom: y + 32 };
+                        let is_trash_hover = hovered_btn == Some(HoverButton::RowTrash(i));
+                        if is_trash_hover {
+                            draw_rounded_box(mem_dc, &trash_rect, 4, COLOR_BTN_HOVER, None);
+                        }
+                        SelectObject(mem_dc, font_body);
+                        SetTextColor(mem_dc, if is_trash_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
+                        let mut tr_text = trash_rect;
+                        let t_icon = to_wstring("×");
+                        DrawTextW(mem_dc, t_icon.as_ptr(), -1, &mut tr_text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    }
+
+                    // 拓展操作按钮 (竖三点 ⋮)
+                    let more_rect = RECT { left: 282, top: y + 10, right: 304, bottom: y + 32 };
+                    let is_more_hover = hovered_btn == Some(HoverButton::RowMore(i));
+                    if is_more_hover {
+                        draw_rounded_box(mem_dc, &more_rect, 4, COLOR_BTN_HOVER, None);
+                    }
+                    SelectObject(mem_dc, font_body);
+                    SetTextColor(mem_dc, if is_more_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_MUTED });
+                    let mut mr_text = more_rect;
+                    let m_icon = to_wstring("⋮");
+                    DrawTextW(mem_dc, m_icon.as_ptr(), -1, &mut mr_text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                    // 行分割线
+                    if i < VISIBLE_ROWS - 1 && actual_idx < items.len() - 1 {
+                        let sep_rect = RECT { left: 52, top: y + ROW_HEIGHT - 1, right: 300, bottom: y + ROW_HEIGHT };
+                        let s_brush = CreateSolidBrush(COLOR_ROW_SEP);
+                        FillRect(mem_dc, &sep_rect, s_brush);
+                        DeleteObject(s_brush);
+                    }
+                }
+
+                // 滚动条指示器 (当条目超过 6 项时展示)
+                if items.len() > VISIBLE_ROWS {
+                    let total = items.len() as f32;
+                    let track_h = 240.0;
+                    let thumb_h = (VISIBLE_ROWS as f32 / total * track_h).max(20.0);
+                    let thumb_y = 180.0 + (scroll as f32 / (total - VISIBLE_ROWS as f32) * (track_h - thumb_h));
+                    let thumb_rect = RECT {
+                        left: 304,
+                        top: thumb_y as i32,
+                        right: 307,
+                        bottom: (thumb_y + thumb_h) as i32,
+                    };
+                    draw_rounded_box(mem_dc, &thumb_rect, 2, COLOR_BADGE_BG, None);
+                }
             }
 
-            // 6. 底栏状态
-            SelectObject(mem_dc, font_small);
-            SetTextColor(mem_dc, 0x888888);
-            let mut status_rect = RECT {
-                left: 16,
-                top: WINDOW_HEIGHT - 32,
-                right: WINDOW_WIDTH - 16,
-                bottom: WINDOW_HEIGHT - 10,
-            };
-            let status_txt = to_wstring(&state.status_text);
-            DrawTextW(mem_dc, status_txt.as_ptr(), -1, &mut status_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            // ----------------------------------------------------
+            // 6. 底栏 (Footer Toolbar)
+            // ----------------------------------------------------
+            let sep_line = RECT { left: 12, top: 442, right: 308, bottom: 443 };
+            let foot_brush = CreateSolidBrush(COLOR_CARD_BORDER);
+            FillRect(mem_dc, &sep_line, foot_brush);
+            DeleteObject(foot_brush);
+
+            // 配置项按钮 (左侧)
+            let cfg_rect = RECT { left: 14, top: 448, right: 86, bottom: 472 };
+            let is_cfg_hover = hovered_btn == Some(HoverButton::Settings);
+            if is_cfg_hover {
+                draw_rounded_box(mem_dc, &cfg_rect, 4, COLOR_BTN_HOVER, None);
+            }
+            SelectObject(mem_dc, font_sub);
+            SetTextColor(mem_dc, if is_cfg_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
+            let mut cr = cfg_rect;
+            let cfg_txt = to_wstring("⚙ 配置项");
+            DrawTextW(mem_dc, cfg_txt.as_ptr(), -1, &mut cr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // 退出按钮 (右侧)
+            let quit_rect = RECT { left: 254, top: 448, right: 306, bottom: 472 };
+            let is_q_hover = hovered_btn == Some(HoverButton::Quit);
+            if is_q_hover {
+                draw_rounded_box(mem_dc, &quit_rect, 4, COLOR_BTN_HOVER, None);
+            }
+            SelectObject(mem_dc, font_sub);
+            SetTextColor(mem_dc, if is_q_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
+            let mut qr = quit_rect;
+            let q_txt = to_wstring("🌐 退出");
+            DrawTextW(mem_dc, q_txt.as_ptr(), -1, &mut qr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
-        // 将内存双缓冲 BitBlt 到屏幕上
         BitBlt(hdc, 0, 0, client_rect.right, client_rect.bottom, mem_dc, 0, 0, SRCCOPY);
 
         SelectObject(mem_dc, old_bmp);
@@ -482,8 +1030,10 @@ mod win_gui {
         DeleteDC(mem_dc);
 
         DeleteObject(font_title);
+        DeleteObject(font_card_title);
         DeleteObject(font_body);
-        DeleteObject(font_small);
+        DeleteObject(font_sub);
+        DeleteObject(font_badge);
     }
 
     unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -504,9 +1054,113 @@ mod win_gui {
             WM_ACTIVATE => {
                 let state = (wparam & 0xFFFF) as u32;
                 if state == 0 {
-                    // WA_INACTIVE: 失焦自动隐退
+                    // 失焦自动隐退 (标准系统托盘行为)
                     ShowWindow(hwnd, SW_HIDE);
                     IS_VISIBLE.store(false, Ordering::SeqCst);
+                }
+                0
+            }
+            WM_MOUSEMOVE => {
+                let mut tme: TRACKMOUSEEVENT = std::mem::zeroed();
+                tme.cbSize = std::mem::size_of::<TRACKMOUSEEVENT>() as u32;
+                tme.dwFlags = TME_LEAVE;
+                tme.hwndTrack = hwnd;
+                TrackMouseEvent(&mut tme);
+
+                let x = (lparam & 0xFFFF) as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i32;
+
+                let mut new_btn = None;
+                let mut new_row = None;
+
+                // 顶栏按钮
+                if x >= 260 && x <= 282 && y >= 13 && y <= 35 {
+                    new_btn = Some(HoverButton::SortMenu);
+                } else if x >= 286 && x <= 308 && y >= 13 && y <= 35 {
+                    new_btn = Some(HoverButton::Refresh);
+                }
+                // 核心卡片按钮
+                else if y >= 90 && y <= 122 {
+                    if x >= 22 && x <= 268 {
+                        new_btn = Some(HoverButton::HeroMain);
+                    } else if x >= 272 && x <= 298 {
+                        new_btn = Some(HoverButton::HeroChevron);
+                    }
+                }
+                // 分段选择器 Tab 切换
+                else if y >= 138 && y <= 166 {
+                    let tab_w = (296 - 4) / 3;
+                    for idx in 0..3 {
+                        let tx = 14 + (idx as i32 * tab_w);
+                        if x >= tx && x <= tx + tab_w - 2 {
+                            new_btn = Some(HoverButton::Tab(idx));
+                            break;
+                        }
+                    }
+                }
+                // 应用列表区
+                else if y >= 175 && y <= 175 + (VISIBLE_ROWS as i32 * ROW_HEIGHT) {
+                    let row_idx = ((y - 175) / ROW_HEIGHT) as usize;
+                    new_row = Some(row_idx);
+                    if x >= 256 && x <= 278 {
+                        new_btn = Some(HoverButton::RowTrash(row_idx));
+                    } else if x >= 282 && x <= 304 {
+                        new_btn = Some(HoverButton::RowMore(row_idx));
+                    }
+                }
+                // 空状态查看全部按钮
+                else if x >= 100 && x <= 220 && y >= 310 && y <= 334 {
+                    new_btn = Some(HoverButton::ViewAllFromEmpty);
+                }
+                // 底栏按钮
+                else if y >= 448 && y <= 472 {
+                    if x >= 14 && x <= 86 {
+                        new_btn = Some(HoverButton::Settings);
+                    } else if x >= 254 && x <= 306 {
+                        new_btn = Some(HoverButton::Quit);
+                    }
+                }
+
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    if state.hovered_btn != new_btn || state.hovered_row != new_row {
+                        state.hovered_btn = new_btn;
+                        state.hovered_row = new_row;
+                        drop(state_guard);
+                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+                    }
+                }
+                0
+            }
+            WM_MOUSELEAVE => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    if state.hovered_btn.is_some() || state.hovered_row.is_some() {
+                        state.hovered_btn = None;
+                        state.hovered_row = None;
+                        drop(state_guard);
+                        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+                    }
+                }
+                0
+            }
+            WM_MOUSEWHEEL => {
+                let delta = ((wparam >> 16) & 0xFFFF) as i16;
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    let total_items = match state.active_tab {
+                        1 => state.protected.len(),
+                        2 => state.targets.len() + state.protected.len(),
+                        _ => state.targets.len(),
+                    };
+                    let max_offset = total_items.saturating_sub(VISIBLE_ROWS);
+                    if delta > 0 {
+                        state.scroll_offset = state.scroll_offset.saturating_sub(1);
+                    } else if delta < 0 {
+                        state.scroll_offset = (state.scroll_offset + 1).min(max_offset);
+                    }
+                    drop(state_guard);
+                    windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
                 0
             }
@@ -514,43 +1168,105 @@ mod win_gui {
                 let x = (lparam & 0xFFFF) as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
 
-                // 检查一键结束按钮点击
-                if x >= WINDOW_WIDTH - 110 && x <= WINDOW_WIDTH - 24 && y >= 62 && y <= 100 {
-                    execute_clean_all();
+                // 1. 顶栏操作
+                if x >= 260 && x <= 282 && y >= 13 && y <= 35 {
+                    show_sort_menu(hwnd, x, y);
+                    return 0;
+                }
+                if x >= 286 && x <= 308 && y >= 13 && y <= 35 {
                     refresh_scan();
                     windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
                     return 0;
                 }
 
-                // 检查分段 Tab 点击
-                for idx in 0..3 {
-                    let tab_x = 16 + (idx * 68);
-                    if x >= tab_x && x <= tab_x + 62 && y >= 122 && y <= 144 {
-                        if let Some(state) = STATE.lock().unwrap().as_mut() {
-                            state.active_tab = idx as usize;
-                        }
+                // 2. 核心卡片操作
+                if y >= 90 && y <= 122 {
+                    if x >= 22 && x <= 268 {
+                        execute_clean_all(TerminationMode::Standard);
+                        refresh_scan();
                         windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                        return 0;
+                    } else if x >= 272 && x <= 298 {
+                        show_action_chevron_menu(hwnd, x, y);
                         return 0;
                     }
                 }
 
-                // 检查单项任务的结束点击
-                let mut row_y = 152;
-                for i in 0..6 {
-                    if x >= WINDOW_WIDTH - 64 && x <= WINDOW_WIDTH - 24 && y >= row_y + 10 && y <= row_y + 36 {
-                        let mut state_guard = STATE.lock().unwrap();
-                        if let Some(state) = state_guard.as_mut() {
-                            if i < state.targets.len() {
-                                let target = state.targets[i].clone();
-                                drop(state_guard);
-                                let report = tiered_terminate(&[target], TerminationMode::Standard, 400, &WhitelistManager::new());
-                                refresh_scan();
-                                windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
-                                return 0;
+                // 3. 分段选择器 Tab 切换
+                if y >= 138 && y <= 166 {
+                    let tab_w = (296 - 4) / 3;
+                    for idx in 0..3 {
+                        let tx = 14 + (idx as i32 * tab_w);
+                        if x >= tx && x <= tx + tab_w - 2 {
+                            if let Some(state) = STATE.lock().unwrap().as_mut() {
+                                state.active_tab = idx;
+                                state.scroll_offset = 0;
                             }
+                            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                            return 0;
                         }
                     }
-                    row_y += 52;
+                }
+
+                // 4. 空状态“查看全部活动”按钮
+                if x >= 100 && x <= 220 && y >= 310 && y <= 334 {
+                    if let Some(state) = STATE.lock().unwrap().as_mut() {
+                        state.active_tab = 2;
+                        state.scroll_offset = 0;
+                    }
+                    windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                    return 0;
+                }
+
+                // 5. 应用列表行操作
+                if y >= 175 && y <= 175 + (VISIBLE_ROWS as i32 * ROW_HEIGHT) {
+                    let visible_idx = ((y - 175) / ROW_HEIGHT) as usize;
+                    let (scroll, active_tab) = {
+                        let state = STATE.lock().unwrap();
+                        let s = state.as_ref().unwrap();
+                        (s.scroll_offset, s.active_tab)
+                    };
+                    let actual_idx = scroll + visible_idx;
+
+                    // 单项垃圾桶结束
+                    if x >= 256 && x <= 278 {
+                        let mut target_to_kill = None;
+                        {
+                            let state_guard = STATE.lock().unwrap();
+                            if let Some(state) = state_guard.as_ref() {
+                                if active_tab == 0 && actual_idx < state.targets.len() {
+                                    target_to_kill = Some(state.targets[actual_idx].clone());
+                                } else if active_tab == 2 {
+                                    if actual_idx < state.targets.len() {
+                                        target_to_kill = Some(state.targets[actual_idx].clone());
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(target) = target_to_kill {
+                            tiered_terminate(&[target], TerminationMode::Standard, 400, &WhitelistManager::new());
+                            refresh_scan();
+                            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+                            return 0;
+                        }
+                    }
+
+                    // 竖三点更多菜单
+                    if x >= 282 && x <= 304 {
+                        show_row_more_menu(hwnd, x, y, actual_idx, active_tab == 1);
+                        return 0;
+                    }
+                }
+
+                // 6. 底栏操作
+                if y >= 448 && y <= 472 {
+                    if x >= 14 && x <= 86 {
+                        show_settings_menu(hwnd, x, y);
+                        return 0;
+                    } else if x >= 254 && x <= 306 {
+                        PostQuitMessage(0);
+                        return 0;
+                    }
                 }
 
                 0
@@ -577,13 +1293,13 @@ mod win_gui {
 
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: 0,
+            style: CS_DROPSHADOW, // 开启 Windows 11 原生悬浮投影
             lpfnWndProc: Some(window_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: h_instance,
             hIcon: 0 as HICON,
-            hCursor: unsafe { windows_sys::Win32::UI::WindowsAndMessaging::LoadCursorW(0 as HINSTANCE, 32512 as *const u16) },
+            hCursor: unsafe { LoadCursorW(0 as HINSTANCE, IDC_ARROW) },
             hbrBackground: 0 as HBRUSH,
             lpszMenuName: std::ptr::null(),
             lpszClassName: class_name.as_ptr(),
@@ -611,7 +1327,7 @@ mod win_gui {
             )
         };
 
-        // 启用 Windows 11 原生圆角
+        // 启用 Windows 11 原生圆角 (DWMWCP_ROUND)
         let corner_preference = DWMWCP_ROUND;
         unsafe {
             DwmSetWindowAttribute(
@@ -640,7 +1356,6 @@ mod win_gui {
             Shell_NotifyIconW(NIM_ADD, &nid);
         }
 
-        // 初始化应用数据
         {
             let mut state = STATE.lock().unwrap();
             *state = Some(GuiState {
@@ -649,14 +1364,17 @@ mod win_gui {
                 protected: Vec::new(),
                 sort_mode: SortMode::Composite,
                 active_tab: 0,
-                status_text: "就绪".to_string(),
+                scroll_offset: 0,
+                hovered_row: None,
+                hovered_btn: None,
+                icon_cache: HashMap::new(),
+                status_message: None,
                 last_scan: Instant::now(),
             });
         }
 
         refresh_scan();
 
-        // Win32 标准消息循环
         let mut msg: MSG = unsafe { std::mem::zeroed() };
         while unsafe { GetMessageW(&mut msg, 0 as HWND, 0, 0) } > 0 {
             unsafe {
@@ -665,10 +1383,9 @@ mod win_gui {
             }
         }
 
-        // 清理托盘图标
         unsafe {
             Shell_NotifyIconW(NIM_DELETE, &nid);
-            windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(h_icon);
+            DestroyIcon(h_icon);
         }
     }
 }
