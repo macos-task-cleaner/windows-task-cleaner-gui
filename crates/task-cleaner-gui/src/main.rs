@@ -23,24 +23,26 @@ mod win_gui {
         WhitelistMatch,
     };
     use windows_sys::Win32::Foundation::{
-        CloseHandle, COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+        CloseHandle, COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, ClientToScreen, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC,
-        CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
-        FillRect, GetDC, GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint, ReleaseDC,
-        RoundRect, SelectObject, SetBkMode, SetTextColor, BLACK_BRUSH, CLEARTYPE_QUALITY, DT_CENTER,
-        DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM,
-        FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-        PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
+        CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW,
+        EndPaint, FillRect, GetDC, GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint,
+        ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER,
+        BI_RGB, BLACK_BRUSH, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
+        DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL, FW_SEMIBOLD, HBITMAP,
+        HBRUSH, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_NULL, PS_SOLID,
+        SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
+    use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
@@ -58,7 +60,7 @@ mod win_gui {
     };
     use windows_sys::Win32::UI::Shell::{
         ExtractIconExW, ShellExecuteExW, ShellExecuteW, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON,
-        NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+        NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -71,7 +73,8 @@ mod win_gui {
         SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_BOTTOMALIGN,
         TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY,
         WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_USER,
+        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        WM_TIMER, WM_USER,
         WNDCLASSEXW, WS_CAPTION, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
         WS_VISIBLE,
     };
@@ -610,48 +613,153 @@ mod win_gui {
         }
     }
 
-    /// 动态合成现代极简胶囊 X 几何托盘图标
+    /// 检测当前 Windows 任务栏是否为深色模式 (默认 Windows 11 为深色)
+    unsafe fn is_dark_taskbar() -> bool {
+        let subkey = to_wstring(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+        let val_name = to_wstring("SystemUsesLightTheme");
+        let mut hkey = std::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_QUERY_VALUE, &mut hkey) == 0 {
+            let mut val = 0u32;
+            let mut val_type = 0u32;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let res = RegQueryValueExW(
+                hkey,
+                val_name.as_ptr(),
+                std::ptr::null(),
+                &mut val_type,
+                &mut val as *mut _ as *mut u8,
+                &mut size,
+            );
+            RegCloseKey(hkey);
+            if res == 0 {
+                return val == 0;
+            }
+        }
+        true
+    }
+
+    /// 更新系统托盘气泡/悬停提示信息
+    unsafe fn update_tray_tooltip(hwnd: HWND, text: &str) {
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_TIP;
+        let tip = to_wstring(text);
+        let len = tip.len().min(nid.szTip.len());
+        nid.szTip[..len].copy_from_slice(&tip[..len]);
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+
+    /// 动态合成 100% 对齐 macOS 规范的系统级原生胶囊 X (Pill-X) 镂空托盘图标
     unsafe fn create_default_tray_icon() -> HICON {
         let cx = GetSystemMetrics(SM_CXSMICON).max(16);
         let cy = GetSystemMetrics(SM_CYSMICON).max(16);
+
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = cx;
+        bmi.bmiHeader.biHeight = -cy; // top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB as u32;
+
+        let mut bits_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
         let screen_dc = GetDC(0 as HWND);
-        let hdc = CreateCompatibleDC(screen_dc);
-
-        let hbm_color = CreateCompatibleBitmap(screen_dc, cx, cy);
-        let hbm_mask = CreateBitmap(cx, cy, 1, 1, std::ptr::null());
-
+        let hbm_color = CreateDIBSection(
+            screen_dc,
+            &bmi,
+            DIB_RGB_COLORS,
+            &mut bits_ptr,
+            0 as HANDLE,
+            0,
+        );
         ReleaseDC(0 as HWND, screen_dc);
 
-        let h_old = SelectObject(hdc, hbm_color);
-        let bg_brush = CreateSolidBrush(COLOR_ACCENT_BLUE);
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: cx,
-            bottom: cy,
+        if hbm_color == 0 as HBITMAP || bits_ptr.is_null() {
+            return 0 as HICON;
+        }
+
+        let dark = is_dark_taskbar();
+        let (pill_r, pill_g, pill_b) = if dark {
+            (255u8, 255u8, 255u8) // 深色任务栏使用纯白高亮胶囊
+        } else {
+            (30u8, 30u8, 32u8)    // 浅色任务栏使用暗色石墨胶囊
         };
-        FillRect(hdc, &rect, bg_brush);
-        DeleteObject(bg_brush);
 
-        let fg_brush = CreateSolidBrush(rgb(255, 255, 255));
-        let pad = cx / 4;
-        let inner_rect = RECT {
-            left: pad,
-            top: pad,
-            right: cx - pad,
-            bottom: cy - pad,
-        };
-        FillRect(hdc, &inner_rect, fg_brush);
-        DeleteObject(fg_brush);
+        // 几何参数: 药丸胶囊与中心 X 镂空 (宽高比 ~1.65:1，完美对齐 macOS TrayIconHelper.pillXIcon)
+        let pw = (cx as f64) * 0.90;
+        let ph = (cy as f64) * 0.65;
+        let r = ph / 2.0;
 
-        SelectObject(hdc, h_old);
+        let center_x = ((cx - 1) as f64) / 2.0;
+        let center_y = ((cy - 1) as f64) / 2.0;
 
-        let mask_old = SelectObject(hdc, hbm_mask);
-        let black_brush = GetStockObject(BLACK_BRUSH as i32);
-        FillRect(hdc, &rect, black_brush as HBRUSH);
-        SelectObject(hdc, mask_old);
+        let x0 = center_x - (pw / 2.0) + r;
+        let x1 = center_x + (pw / 2.0) - r;
 
-        DeleteDC(hdc);
+        let x_arm = ph * 0.28;
+        let x_stroke = (ph * 0.16).max(1.2);
+
+        #[inline]
+        fn dist_to_segment(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+            let pax = px - ax;
+            let pay = py - ay;
+            let bax = bx - ax;
+            let bay = by - ay;
+            let h = ((pax * bax + pay * bay) / (bax * bax + bay * bay + 1e-9)).clamp(0.0, 1.0);
+            let dx = pax - bax * h;
+            let dy = pay - bay * h;
+            (dx * dx + dy * dy).sqrt()
+        }
+
+        let pixels = std::slice::from_raw_parts_mut(bits_ptr as *mut u32, (cx * cy) as usize);
+
+        for y in 0..cy {
+            for x in 0..cx {
+                let mut pill_cov = 0;
+                let mut x_cov = 0;
+
+                // 4x4 超采样抗锯齿
+                for sy in 0..4 {
+                    let py = (y as f64) + ((sy as f64) + 0.5) / 4.0;
+                    for sx in 0..4 {
+                        let px = (x as f64) + ((sx as f64) + 0.5) / 4.0;
+
+                        // 胶囊外边界距离
+                        let qx = px.clamp(x0, x1);
+                        let qy = center_y;
+                        let dp = ((px - qx).powi(2) + (py - qy).powi(2)).sqrt() - r;
+
+                        if dp <= 0.0 {
+                            pill_cov += 1;
+
+                            // X 符号镂空距离
+                            let d1 = dist_to_segment(px, py, center_x - x_arm, center_y - x_arm, center_x + x_arm, center_y + x_arm);
+                            let d2 = dist_to_segment(px, py, center_x - x_arm, center_y + x_arm, center_x + x_arm, center_y - x_arm);
+                            let dx = d1.min(d2) - (x_stroke / 2.0);
+                            if dx <= 0.0 {
+                                x_cov += 1;
+                            }
+                        }
+                    }
+                }
+
+                // 核心算法: 仅在胶囊内部且排除 X 镂空区域产生像素覆盖 (透明 X 穿透任务栏背景)
+                let effective_cov = (pill_cov as i32 - x_cov as i32).max(0) as f64 / 16.0;
+                let alpha = (effective_cov * 255.0).round() as u8;
+                let pr = ((pill_r as f64) * effective_cov).round() as u8;
+                let pg = ((pill_g as f64) * effective_cov).round() as u8;
+                let pb = ((pill_b as f64) * effective_cov).round() as u8;
+
+                let pixel_val = ((alpha as u32) << 24) | ((pr as u32) << 16) | ((pg as u32) << 8) | (pb as u32);
+                pixels[(y * cx + x) as usize] = pixel_val;
+            }
+        }
+
+        let bytes_per_line = ((cx + 15) / 16) * 2;
+        let mask_bytes = vec![0u8; (bytes_per_line * cy) as usize];
+        let hbm_mask = CreateBitmap(cx, cy, 1, 1, mask_bytes.as_ptr() as *const core::ffi::c_void);
 
         let icon_info = ICONINFO {
             fIcon: 1,
@@ -665,6 +773,21 @@ mod win_gui {
         DeleteObject(hbm_color);
         DeleteObject(hbm_mask);
         h_icon
+    }
+
+    /// 动态更新系统托盘图标 (例如在深浅色主题切换时自适应重绘)
+    unsafe fn update_tray_icon(hwnd: HWND) {
+        let h_icon = create_default_tray_icon();
+        if h_icon != 0 as HICON {
+            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            nid.hWnd = hwnd;
+            nid.uID = 1;
+            nid.uFlags = NIF_ICON;
+            nid.hIcon = h_icon;
+            Shell_NotifyIconW(NIM_MODIFY, &nid);
+            DestroyIcon(h_icon);
+        }
     }
 
     /// 高精度圆角矩形渲染助手
@@ -1045,7 +1168,7 @@ mod win_gui {
                 let title_font = create_font(15, FW_BOLD as i32);
                 let old_font = SelectObject(hdc, title_font);
                 let mut tr = RECT { left: 24, top: 14, right: rc.right - 24, bottom: 36 };
-                let title_txt = to_wstring("录制全局快捷键");
+                let title_txt = to_wstring("录制一键清理快捷键");
                 DrawTextW(hdc, title_txt.as_ptr(), -1, &mut tr, DT_LEFT | DT_SINGLELINE);
 
                 // 副标题提示
@@ -1053,7 +1176,7 @@ mod win_gui {
                 SelectObject(hdc, sub_font);
                 SetTextColor(hdc, rgb(156, 163, 175));
                 let mut sr = RECT { left: 24, top: 38, right: rc.right - 24, bottom: 58 };
-                let sub_txt = to_wstring("请在键盘上按下组合键 (需含 Ctrl / Alt / Shift / Win)");
+                let sub_txt = to_wstring("请在键盘上按下组合键 (按下后直接执行一键退出未保护任务)");
                 DrawTextW(hdc, sub_txt.as_ptr(), -1, &mut sr, DT_LEFT | DT_SINGLELINE);
                 DeleteObject(sub_font);
 
@@ -1250,7 +1373,7 @@ mod win_gui {
                 state.prefs.hotkey.vk = vk;
                 state.prefs.hotkey.display = display.clone();
                 state.prefs.save();
-                state.status_message = Some(format!("全局快捷键已更新为: {}", display));
+                state.status_message = Some(format!("一键清理快捷键已更新为: {}", display));
                 state.status_timestamp = Some(Instant::now());
             }
         }
@@ -1309,7 +1432,7 @@ mod win_gui {
         let dlg_hwnd = CreateWindowExW(
             WS_EX_TOPMOST,
             class_name.as_ptr(),
-            to_wstring("录制全局快捷键 - Task Cleaner").as_ptr(),
+            to_wstring("录制一键清理快捷键 - Task Cleaner").as_ptr(),
             WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
             x,
             y,
@@ -1859,9 +1982,9 @@ mod win_gui {
                 };
                 apply_hotkey(hwnd, &cfg);
                 let status = if new_enabled {
-                    format!("全局快捷键已开启: {}", cfg.display)
+                    format!("一键清理快捷键已开启: {}", cfg.display)
                 } else {
-                    "全局快捷键已关闭".to_string()
+                    "一键清理快捷键已关闭".to_string()
                 };
                 {
                     let mut state_guard = STATE.lock().unwrap();
@@ -1899,7 +2022,7 @@ mod win_gui {
                     if let Some(state) = state_guard.as_mut() {
                         state.prefs.hotkey = new_cfg.clone();
                         state.prefs.save();
-                        state.status_message = Some(format!("快捷键已设为: {}", new_cfg.display));
+                        state.status_message = Some(format!("一键清理快捷键已设为: {}", new_cfg.display));
                         state.status_timestamp = Some(Instant::now());
                     }
                 } else {
@@ -2080,7 +2203,7 @@ mod win_gui {
                         .unwrap_or_else(|| "Ctrl + Alt + K".to_string())
                 };
                 let caption = to_wstring("Task Cleaner");
-                let msg = to_wstring(&format!("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n快捷键: {} 呼出/隐藏\n\n轻量优雅的一体化前台任务管理、白名单保护与内存工作集深度释放套件。\n100% 独立原生 Rust 二进制，零外部重型依赖。", cur_shortcut));
+                let msg = to_wstring(&format!("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n全局清理快捷键: {} (一键退出全部未保护任务)\n\n轻量优雅的一体化前台任务管理、白名单保护与内存工作集深度释放套件。\n100% 独立原生 Rust 二进制，零外部重型依赖。", cur_shortcut));
                 MessageBoxW(
                     hwnd,
                     msg.as_ptr(),
@@ -2188,6 +2311,8 @@ mod win_gui {
             }
 
             if state.targets.is_empty() {
+                state.status_message = Some("没有待结束的应用".to_string());
+                state.status_timestamp = Some(Instant::now());
                 return;
             }
             let report = tiered_terminate(&state.targets, mode, 400, &state.whitelist);
@@ -2876,8 +3001,26 @@ mod win_gui {
             }
             WM_HOTKEY => {
                 if (wparam as i32) == HOTKEY_TOGGLE_ID {
-                    toggle_window(hwnd);
+                    MessageBeep(0);
+                    refresh_scan();
+                    execute_clean_all(TerminationMode::Standard);
+                    refresh_scan();
+                    let tip_text = {
+                        let state = STATE.lock().unwrap();
+                        state
+                            .as_ref()
+                            .and_then(|s| s.status_message.clone())
+                            .unwrap_or_else(|| "Task Cleaner (Windows 11)".to_string())
+                    };
+                    update_tray_tooltip(hwnd, &format!("Task Cleaner - {}", tip_text));
+                    if IS_VISIBLE.load(Ordering::SeqCst) {
+                        InvalidateRect(hwnd, std::ptr::null(), 1);
+                    }
                 }
+                0
+            }
+            WM_SETTINGCHANGE => {
+                update_tray_icon(hwnd);
                 0
             }
             WM_ACTIVATE => {
