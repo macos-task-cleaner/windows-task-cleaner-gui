@@ -108,6 +108,7 @@ pub struct WhitelistSection {
 }
 
 /// 白名单矩阵管理器
+#[derive(Debug, Clone)]
 pub struct WhitelistManager {
     // L1: 系统核心层
     l1_names: HashSet<String>,
