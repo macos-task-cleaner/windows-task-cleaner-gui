@@ -56,16 +56,36 @@ $script:runExitCode = 0
     $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
     $arch = "win-$platform"
     Write-Host "[INFO] Detected Platform: $platform, Architecture: $arch"
-    Write-Host "[INFO] Building and starting WinUI 3 Tray App ($Configuration, $arch)..."
+    Write-Host "[INFO] Building WinUI 3 Tray App ($Configuration, $arch)..."
     $projectPath = "src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj"
     
-    dotnet run --project $projectPath -c $Configuration -r $arch -p:Platform=$platform -v minimal
-    $script:runExitCode = $LASTEXITCODE
+    dotnet build $projectPath -c $Configuration -r $arch -p:Platform=$platform -v minimal
+    $buildExit = $LASTEXITCODE
+    if ($buildExit -ne 0) {
+        Write-Host "[ERROR] Build failed with code: $buildExit" -ForegroundColor Red
+        $script:runExitCode = $buildExit
+        return
+    }
 
-    if ($script:runExitCode -ne 0) {
-        Write-Host "[ERROR] Application exited with code: $($script:runExitCode)" -ForegroundColor Red
+    $candidates = @(
+        "src\TaskCleaner.WinUI\bin\$Configuration\net8.0-windows10.0.19041.0\$arch\TaskCleaner.WinUI.exe",
+        "src\TaskCleaner.WinUI\bin\$platform\$Configuration\net8.0-windows10.0.19041.0\$arch\TaskCleaner.WinUI.exe",
+        "src\TaskCleaner.WinUI\bin\$Configuration\net8.0-windows10.0.19041.0\TaskCleaner.WinUI.exe"
+    )
+    $exePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if ($exePath) {
+        Write-Host "[INFO] Launching WinUI 3 Application: $exePath"
+        & $exePath
+        $script:runExitCode = $LASTEXITCODE
+        if ($script:runExitCode -ne 0) {
+            Write-Host "[ERROR] Application exited with code: $($script:runExitCode)" -ForegroundColor Red
+        } else {
+            Write-Host "[SUCCESS] Application exited normally." -ForegroundColor Green
+        }
     } else {
-        Write-Host "[SUCCESS] Application exited normally." -ForegroundColor Green
+        Write-Host "[ERROR] Could not find built TaskCleaner.WinUI.exe" -ForegroundColor Red
+        $script:runExitCode = 1
     }
 } 2>&1 | ForEach-Object {
     Write-Host $_
