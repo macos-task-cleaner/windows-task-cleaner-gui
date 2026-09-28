@@ -70,9 +70,10 @@ mod win_gui {
         MB_TOPMOST, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
         SPI_GETWORKAREA, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_BOTTOMALIGN,
         TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY,
-        WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-        WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_CAPTION,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
+        WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_USER,
+        WNDCLASSEXW, WS_CAPTION, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
+        WS_VISIBLE,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
@@ -1007,7 +1008,7 @@ mod win_gui {
     }
 
     struct RecorderData {
-        parent_hwnd: HWND,
+        parent_hwnd: isize,
         mods: u32,
         vk: u32,
         display: String,
@@ -1041,14 +1042,14 @@ mod win_gui {
 
                 // 标题
                 SetTextColor(hdc, rgb(255, 255, 255));
-                let title_font = create_font(15, FW_BOLD);
+                let title_font = create_font(15, FW_BOLD as i32);
                 let old_font = SelectObject(hdc, title_font);
                 let mut tr = RECT { left: 24, top: 14, right: rc.right - 24, bottom: 36 };
                 let title_txt = to_wstring("录制全局快捷键");
                 DrawTextW(hdc, title_txt.as_ptr(), -1, &mut tr, DT_LEFT | DT_SINGLELINE);
 
                 // 副标题提示
-                let sub_font = create_font(12, FW_NORMAL);
+                let sub_font = create_font(12, FW_NORMAL as i32);
                 SelectObject(hdc, sub_font);
                 SetTextColor(hdc, rgb(156, 163, 175));
                 let mut sr = RECT { left: 24, top: 38, right: rc.right - 24, bottom: 58 };
@@ -1072,7 +1073,7 @@ mod win_gui {
                     let guard = RECORDER_STATE.lock().unwrap();
                     guard.as_ref().map(|d| d.display.clone()).unwrap_or_else(|| "按下快捷键...".to_string())
                 };
-                let key_font = create_font(16, FW_BOLD);
+                let key_font = create_font(16, FW_BOLD as i32);
                 SelectObject(hdc, key_font);
                 SetTextColor(hdc, rgb(255, 255, 255));
                 let mut kr = box_rect;
@@ -1081,7 +1082,7 @@ mod win_gui {
                 DeleteObject(key_font);
 
                 // 底部三按钮
-                let btn_font = create_font(13, FW_SEMIBOLD);
+                let btn_font = create_font(13, FW_SEMIBOLD as i32);
                 SelectObject(hdc, btn_font);
 
                 let draw_btn = |hdc: HDC, rect: RECT, text: &str, bg_color: COLORREF, text_color: COLORREF| {
@@ -1200,7 +1201,7 @@ mod win_gui {
         let (parent_hwnd, mods, vk, display) = {
             let guard = RECORDER_STATE.lock().unwrap();
             match guard.as_ref() {
-                Some(d) => (d.parent_hwnd, d.mods, d.vk, d.display.clone()),
+                Some(d) => (d.parent_hwnd as HWND, d.mods, d.vk, d.display.clone()),
                 None => return,
             }
         };
@@ -1269,7 +1270,7 @@ mod win_gui {
         {
             let mut guard = RECORDER_STATE.lock().unwrap();
             *guard = Some(RecorderData {
-                parent_hwnd,
+                parent_hwnd: parent_hwnd as isize,
                 mods: cur_hk.modifiers,
                 vk: cur_hk.vk,
                 display: cur_hk.display.clone(),
@@ -1323,7 +1324,7 @@ mod win_gui {
         let corner_preference = DWMWCP_ROUND;
         DwmSetWindowAttribute(
             dlg_hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
             &corner_preference as *const _ as *const _,
             std::mem::size_of::<u32>() as u32,
         );
