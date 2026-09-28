@@ -29,7 +29,7 @@ mod win_gui {
         CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, RoundRect,
         SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, DT_CENTER, DT_END_ELLIPSIS,
         DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL,
-        FW_SEMIBOLD, HBITMAP, HBRUSH, HDC, HFONT, HPEN, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY,
+        FW_SEMIBOLD, HBRUSH, HDC, HFONT, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY,
         TRANSPARENT,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -43,16 +43,17 @@ mod win_gui {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyIcon, DestroyMenu, DispatchMessageW, DrawIconEx, GetCursorPos, GetMessageW,
-        GetSystemMetrics, LoadCursorW, ICONINFO, IDC_ARROW, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
+        GetSystemMetrics, LoadCursorW, ICONINFO, IDC_ARROW, MF_CHECKED, MF_SEPARATOR,
         MF_STRING, MSG, PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowPos,
         ShowWindow, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW, DI_NORMAL, HICON, HMENU,
         SM_CXSMICON, SM_CYSMICON, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, WM_ACTIVATE, WM_COMMAND, WM_CREATE,
-        WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_PAINT, WM_RBUTTONUP, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, WM_ACTIVATE,
+        WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_PAINT, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
+    const WM_MOUSELEAVE: u32 = 0x02A3;
 
     // 菜单 ID 定义
     const IDM_OPEN: usize = 1001;
@@ -131,7 +132,7 @@ mod win_gui {
         scroll_offset: usize,
         hovered_row: Option<usize>,
         hovered_btn: Option<HoverButton>,
-        icon_cache: HashMap<String, HICON>,
+        icon_cache: HashMap<String, isize>,
         status_message: Option<String>,
         last_scan: Instant,
     }
@@ -193,13 +194,13 @@ mod win_gui {
     }
 
     /// 提取真实高分辨率应用图标 (Win32 Shell ExtractIconEx)
-    unsafe fn get_app_icon(exe_path: &str, cache: &mut HashMap<String, HICON>) -> Option<HICON> {
+    unsafe fn get_app_icon(exe_path: &str, cache: &mut HashMap<String, isize>) -> Option<HICON> {
         if exe_path.is_empty() {
             return None;
         }
 
         if let Some(&h) = cache.get(exe_path) {
-            return if h != 0 as HICON { Some(h) } else { None };
+            return if h != 0 { Some(h as HICON) } else { None };
         }
 
         let wpath = to_wstring(exe_path);
@@ -207,10 +208,10 @@ mod win_gui {
         let count = ExtractIconExW(wpath.as_ptr(), 0, std::ptr::null_mut(), &mut h_small, 1);
 
         if count > 0 && h_small != 0 as HICON {
-            cache.insert(exe_path.to_string(), h_small);
+            cache.insert(exe_path.to_string(), h_small as isize);
             Some(h_small)
         } else {
-            cache.insert(exe_path.to_string(), 0 as HICON);
+            cache.insert(exe_path.to_string(), 0);
             None
         }
     }
@@ -296,7 +297,7 @@ mod win_gui {
             1, // DEFAULT_CHARSET
             0,
             0,
-            CLEARTYPE_QUALITY,
+            CLEARTYPE_QUALITY as u32,
             0,
             to_wstring("Segoe UI Variable Text").as_ptr(),
         )
@@ -470,7 +471,7 @@ mod win_gui {
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ACTION_FORCE => {
-                execute_clean_all(TerminationMode::Force);
+                execute_clean_all(TerminationMode::ForceImmediate);
                 refresh_scan();
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
@@ -543,7 +544,7 @@ mod win_gui {
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
             IDM_ROW_FORCE_KILL => {
-                tiered_terminate(&[app], TerminationMode::Force, 0, &WhitelistManager::new());
+                tiered_terminate(&[app], TerminationMode::ForceImmediate, 0, &WhitelistManager::new());
                 refresh_scan();
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
             }
@@ -722,23 +723,25 @@ mod win_gui {
             SelectObject(mem_dc, font_card_title);
             SetTextColor(mem_dc, COLOR_TEXT_PRIMARY);
             let mut card_title = RECT { left: 24, top: 50, right: 230, bottom: 70 };
-            let card_title_txt = to_wstring(if has_targets {
-                &format!("{} 个待结束应用", state.targets.len())
+            let title_str = if has_targets {
+                format!("{} 个待结束应用", state.targets.len())
             } else {
-                "全部应用已保护"
-            });
+                "全部应用已保护".to_string()
+            };
+            let card_title_txt = to_wstring(&title_str);
             DrawTextW(mem_dc, card_title_txt.as_ptr(), -1, &mut card_title, DT_LEFT | DT_SINGLELINE);
 
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, COLOR_TEXT_SECONDARY);
             let mut card_sub = RECT { left: 24, top: 70, right: 230, bottom: 86 };
-            let card_sub_txt = to_wstring(if let Some(msg) = &state.status_message {
-                msg.as_str()
+            let sub_str = if let Some(msg) = &state.status_message {
+                msg.clone()
             } else if has_targets {
-                "结束未受保护的前台应用"
+                "结束未受保护的前台应用".to_string()
             } else {
-                "当前前台无待清理的任务"
-            });
+                "当前前台无待清理的任务".to_string()
+            };
+            let card_sub_txt = to_wstring(&sub_str);
             DrawTextW(mem_dc, card_sub_txt.as_ptr(), -1, &mut card_sub, DT_LEFT | DT_SINGLELINE);
 
             // 右上角状态胶囊标签 (待处理 / 已就绪)
@@ -1386,6 +1389,14 @@ mod win_gui {
         unsafe {
             Shell_NotifyIconW(NIM_DELETE, &nid);
             DestroyIcon(h_icon);
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                for &h in state.icon_cache.values() {
+                    if h != 0 {
+                        DestroyIcon(h as HICON);
+                    }
+                }
+            }
         }
     }
 }
