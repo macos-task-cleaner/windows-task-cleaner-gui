@@ -6,6 +6,16 @@ param (
     [string]$OutputDir = "publish\win-x64"
 )
 
+# 强制将当前终端与底层进程输入输出流全部绑定为 UTF-8，根除 Win32 CLI 乱码
+chcp 65001 | Out-Null
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
+# 关闭 .NET CLI 遥测提示与首次运行 Logo，保持终端整洁
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+$env:DOTNET_NOLOGO = "1"
+
 $ErrorActionPreference = "Continue"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
@@ -59,7 +69,10 @@ $script:buildExitCode = 0
         $exePath = Join-Path $OutputDir "TaskCleaner.WinUI.exe"
         Write-Host "[SUCCESS] 发布成功！单文件位于: $exePath" -ForegroundColor Green
     }
-} 2>&1 | Tee-Object -FilePath $logFilePath -Append
+} 2>&1 | ForEach-Object {
+    Write-Host $_
+    $_ | Out-File -FilePath $logFilePath -Append -Encoding utf8
+}
 
 $exitCode = $script:buildExitCode
 

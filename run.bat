@@ -3,6 +3,10 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
+REM 预设 UTF-8 与静默环境变量，避免首次运行输出乱码或冗余遥测
+set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
+set "DOTNET_NOLOGO=1"
+
 REM 优先调用 run.ps1 以获得精准时间戳、实时 Tee 流输出与 UTF-8 日志记录
 where powershell >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
