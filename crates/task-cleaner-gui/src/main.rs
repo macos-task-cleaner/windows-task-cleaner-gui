@@ -47,7 +47,7 @@ mod win_gui {
         MF_STRING, MSG, PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowPos,
         ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW,
         DI_NORMAL, HICON, HMENU, HWND_TOPMOST, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA,
-        SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN,
+        SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN,
         TPM_LEFTALIGN, TPM_RETURNCMD, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP,
         WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
         WS_EX_TOPMOST, WS_POPUP,
@@ -1420,6 +1420,8 @@ mod win_gui {
             IS_VISIBLE.store(true, Ordering::SeqCst);
             windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
         }
+
+        let mut msg: MSG = unsafe { std::mem::zeroed() };
         while unsafe { GetMessageW(&mut msg, 0 as HWND, 0, 0) } > 0 {
             unsafe {
                 TranslateMessage(&msg);
