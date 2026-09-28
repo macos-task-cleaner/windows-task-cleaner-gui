@@ -25,7 +25,7 @@ mod win_gui {
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
+        BeginPaint, BitBlt, ClientToScreen, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
         CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
         GetDC, GetStockObject, ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor,
         BLACK_BRUSH, CLEARTYPE_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
@@ -47,10 +47,10 @@ mod win_gui {
         MF_STRING, MSG, PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowPos,
         ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage, CS_DROPSHADOW,
         DI_NORMAL, HICON, HMENU, HWND_TOPMOST, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA,
-        SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN,
-        TPM_LEFTALIGN, TPM_RETURNCMD, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP,
-        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_POPUP,
+        SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
+        TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP,
+        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_USER, WNDCLASSEXW,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
 
     const WM_TRAYICON: u32 = WM_USER + 101;
@@ -426,7 +426,7 @@ mod win_gui {
         }
     }
 
-    unsafe fn show_sort_menu(hwnd: HWND, x: i32, y: i32) {
+    unsafe fn show_sort_menu(hwnd: HWND) {
         let cur_mode = STATE.lock().unwrap().as_ref().map(|s| s.sort_mode).unwrap_or_default();
         let menu: HMENU = CreatePopupMenu();
 
@@ -441,16 +441,26 @@ mod win_gui {
         add_item(menu, IDM_SORT_WINDOWS, "窗口数量", cur_mode == SortMode::Windows);
         add_item(menu, IDM_SORT_DEFAULT, "默认字母", cur_mode == SortMode::Default);
 
+        let mut pt = POINT { x: 260, y: 38 };
+        ClientToScreen(hwnd, &mut pt);
+
         SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenuEx(
             menu,
-            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            x,
-            y,
+            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
+            pt.x,
+            pt.y,
             hwnd,
             std::ptr::null(),
         );
         DestroyMenu(menu);
+
+        let mut state_guard = STATE.lock().unwrap();
+        if let Some(state) = state_guard.as_mut() {
+            state.hovered_btn = None;
+        }
+        drop(state_guard);
+        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
 
         let new_mode = match cmd as usize {
             IDM_SORT_COMPOSITE => Some(SortMode::Composite),
@@ -471,21 +481,31 @@ mod win_gui {
         }
     }
 
-    unsafe fn show_action_chevron_menu(hwnd: HWND, x: i32, y: i32) {
+    unsafe fn show_action_chevron_menu(hwnd: HWND) {
         let menu: HMENU = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, IDM_ACTION_GRACEFUL, to_wstring("常规结束 (标准模式)").as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_ACTION_FORCE, to_wstring("强制结束 (彻底清理)").as_ptr());
 
+        let mut pt = POINT { x: 298, y: 124 };
+        ClientToScreen(hwnd, &mut pt);
+
         SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenuEx(
             menu,
-            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            x,
-            y,
+            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
+            pt.x,
+            pt.y,
             hwnd,
             std::ptr::null(),
         );
         DestroyMenu(menu);
+
+        let mut state_guard = STATE.lock().unwrap();
+        if let Some(state) = state_guard.as_mut() {
+            state.hovered_btn = None;
+        }
+        drop(state_guard);
+        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
 
         match cmd as usize {
             IDM_ACTION_GRACEFUL => {
@@ -502,7 +522,7 @@ mod win_gui {
         }
     }
 
-    unsafe fn show_row_more_menu(hwnd: HWND, x: i32, y: i32, actual_idx: usize, is_protected_tab: bool) {
+    unsafe fn show_row_more_menu(hwnd: HWND, actual_idx: usize, is_protected_tab: bool) {
         let mut app_info = None;
         {
             let state_guard = STATE.lock().unwrap();
@@ -536,16 +556,27 @@ mod win_gui {
         AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_NAME, to_wstring("复制进程名称").as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PID, to_wstring("复制 PID").as_ptr());
 
+        let mut pt: POINT = std::mem::zeroed();
+        GetCursorPos(&mut pt);
+
         SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenuEx(
             menu,
-            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            x,
-            y,
+            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
+            pt.x,
+            pt.y + 4,
             hwnd,
             std::ptr::null(),
         );
         DestroyMenu(menu);
+
+        let mut state_guard = STATE.lock().unwrap();
+        if let Some(state) = state_guard.as_mut() {
+            state.hovered_btn = None;
+            state.hovered_row = None;
+        }
+        drop(state_guard);
+        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
 
         match cmd as usize {
             IDM_ROW_WHITELIST_ADD => {
@@ -592,25 +623,45 @@ mod win_gui {
         }
     }
 
-    unsafe fn show_settings_menu(hwnd: HWND, x: i32, y: i32) {
+    unsafe fn show_settings_menu(hwnd: HWND) {
         let menu: HMENU = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, IDM_CFG_STARTUP, to_wstring("开机自启动设置").as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_CFG_RELOAD, to_wstring("重新加载白名单规则").as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring("关于 Task Cleaner (Windows 11)").as_ptr());
 
+        let mut pt = POINT { x: 14, y: 444 };
+        ClientToScreen(hwnd, &mut pt);
+
         SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenuEx(
             menu,
             TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            x,
-            y,
+            pt.x,
+            pt.y,
             hwnd,
             std::ptr::null(),
         );
         DestroyMenu(menu);
 
+        let mut state_guard = STATE.lock().unwrap();
+        if let Some(state) = state_guard.as_mut() {
+            state.hovered_btn = None;
+        }
+        drop(state_guard);
+        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 0);
+
         match cmd as usize {
+            IDM_CFG_STARTUP => {
+                let caption = to_wstring("开机自启动设置");
+                let msg = to_wstring("如需开机自动启动 Task Cleaner，请按 Win + R 输入 shell:startup，将 TaskCleaner.exe 的快捷方式放入该目录；或在 Windows 设置 -> 应用 -> 启动 中开启。");
+                windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                    hwnd,
+                    msg.as_ptr(),
+                    caption.as_ptr(),
+                    windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+                );
+            }
             IDM_CFG_RELOAD => {
                 refresh_scan();
                 windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
@@ -1045,7 +1096,7 @@ mod win_gui {
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, if is_cfg_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
             let mut cr = cfg_rect;
-            let cfg_txt = to_wstring("⚙ 配置项");
+            let cfg_txt = to_wstring("配置项");
             DrawTextW(mem_dc, cfg_txt.as_ptr(), -1, &mut cr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // 退出按钮 (右侧)
@@ -1057,7 +1108,7 @@ mod win_gui {
             SelectObject(mem_dc, font_sub);
             SetTextColor(mem_dc, if is_q_hover { COLOR_TEXT_PRIMARY } else { COLOR_TEXT_SECONDARY });
             let mut qr = quit_rect;
-            let q_txt = to_wstring("🌐 退出");
+            let q_txt = to_wstring("退出");
             DrawTextW(mem_dc, q_txt.as_ptr(), -1, &mut qr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
@@ -1079,10 +1130,10 @@ mod win_gui {
             WM_TRAYICON => {
                 let event = (lparam & 0xFFFF) as u32;
                 match event {
-                    windows_sys::Win32::UI::WindowsAndMessaging::WM_LBUTTONUP => {
+                    WM_LBUTTONUP => {
                         toggle_window(hwnd);
                     }
-                    windows_sys::Win32::UI::WindowsAndMessaging::WM_RBUTTONUP => {
+                    WM_RBUTTONUP => {
                         show_tray_context_menu(hwnd);
                     }
                     _ => {}
@@ -1196,13 +1247,28 @@ mod win_gui {
                 }
                 0
             }
+            WM_RBUTTONUP => {
+                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                if y >= 175 && y <= 175 + (VISIBLE_ROWS as i32 * ROW_HEIGHT) {
+                    let visible_idx = ((y - 175) / ROW_HEIGHT) as usize;
+                    let (scroll, active_tab) = {
+                        let state = STATE.lock().unwrap();
+                        let s = state.as_ref().unwrap();
+                        (s.scroll_offset, s.active_tab)
+                    };
+                    let actual_idx = scroll + visible_idx;
+                    show_row_more_menu(hwnd, actual_idx, active_tab == 1);
+                    return 0;
+                }
+                0
+            }
             WM_LBUTTONUP => {
                 let x = (lparam & 0xFFFF) as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
 
                 // 1. 顶栏操作
                 if x >= 236 && x <= 258 && y >= 13 && y <= 35 {
-                    show_sort_menu(hwnd, x, y);
+                    show_sort_menu(hwnd);
                     return 0;
                 }
                 if x >= 262 && x <= 284 && y >= 13 && y <= 35 {
@@ -1224,7 +1290,7 @@ mod win_gui {
                         windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
                         return 0;
                     } else if x >= 272 && x <= 298 {
-                        show_action_chevron_menu(hwnd, x, y);
+                        show_action_chevron_menu(hwnd);
                         return 0;
                     }
                 }
@@ -1290,7 +1356,7 @@ mod win_gui {
 
                     // 竖三点更多菜单
                     if x >= 282 && x <= 304 {
-                        show_row_more_menu(hwnd, x, y, actual_idx, active_tab == 1);
+                        show_row_more_menu(hwnd, actual_idx, active_tab == 1);
                         return 0;
                     }
                 }
@@ -1298,7 +1364,7 @@ mod win_gui {
                 // 6. 底栏操作
                 if y >= 448 && y <= 472 {
                     if x >= 14 && x <= 86 {
-                        show_settings_menu(hwnd, x, y);
+                        show_settings_menu(hwnd);
                         return 0;
                     } else if x >= 254 && x <= 306 {
                         PostQuitMessage(0);
