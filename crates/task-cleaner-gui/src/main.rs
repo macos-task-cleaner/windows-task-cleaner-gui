@@ -616,7 +616,7 @@ mod win_gui {
         unsafe {
             DwmSetWindowAttribute(
                 hwnd,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
+                DWMWA_WINDOW_CORNER_PREFERENCE as u32,
                 &corner_preference as *const _ as *const _,
                 std::mem::size_of::<u32>() as u32,
             );

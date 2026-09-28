@@ -12,7 +12,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcessId, GetExitCodeProcess, OpenProcess, TerminateProcess, WaitForSingleObject,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, SYNCHRONIZE,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
@@ -25,6 +25,7 @@ use crate::model::{
 use crate::whitelist::{WhitelistManager, WhitelistTier};
 
 const STILL_ACTIVE: u32 = 259;
+const SYNCHRONIZE: u32 = 0x0010_0000;
 
 /// 递归解析调用者进程的完整父系祖先 PID (Toolhelp32 Process Tree)
 /// 严格保护 PowerShell、CMD、Windows Terminal、VS Code 及宿主环境不被误杀

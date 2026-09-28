@@ -66,7 +66,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL 
     let res = unsafe {
         DwmGetWindowAttribute(
             hwnd,
-            DWMWA_CLOAKED,
+            DWMWA_CLOAKED as u32,
             &mut cloaked as *mut _ as *mut _,
             std::mem::size_of::<u32>() as u32,
         )
