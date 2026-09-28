@@ -1298,7 +1298,8 @@ mod win_gui {
         }
         InvalidateRect(hwnd, std::ptr::null(), 0);
 
-        if cmd == IDM_LANG_AUTO as u32 {
+        let cmd = cmd as usize;
+        if cmd == IDM_LANG_AUTO {
             let mut state_guard = STATE.lock().unwrap();
             if let Some(state) = state_guard.as_mut() {
                 state.prefs.language_pref = LanguagePreference::Auto;
@@ -1306,8 +1307,8 @@ mod win_gui {
                 state.prefs.save();
             }
             InvalidateRect(hwnd, std::ptr::null(), 1);
-        } else if cmd >= IDM_LANG_BASE as u32 && cmd < (IDM_LANG_BASE + Language::ALL.len()) as u32 {
-            let target_lang = Language::ALL[(cmd - IDM_LANG_BASE as u32) as usize];
+        } else if cmd >= IDM_LANG_BASE && cmd < (IDM_LANG_BASE + Language::ALL.len()) {
+            let target_lang = Language::ALL[cmd - IDM_LANG_BASE];
             let mut state_guard = STATE.lock().unwrap();
             if let Some(state) = state_guard.as_mut() {
                 state.prefs.language_pref = LanguagePreference::Specific(target_lang);
