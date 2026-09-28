@@ -1,0 +1,28 @@
+[package]
+name = "task-cleaner-gui"
+version = "1.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Native Windows 11 Fluent system tray application for Task Cleaner"
+
+[[bin]]
+name = "TaskCleaner"
+path = "src/main.rs"
+
+[dependencies]
+task-cleaner-core = { path = "../task-cleaner-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Shell",
+    "Win32_UI_Controls",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+]

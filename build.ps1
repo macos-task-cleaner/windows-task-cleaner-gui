@@ -1,97 +1,58 @@
-﻿# Task Cleaner (WinUI 3) - Windows 11 Build & Publish Script
+﻿# Task Cleaner (Windows 11) - Release Build Script
 # Dual-licensed under GNU AGPLv3 and Commercial License.
-param (
-    [string]$Configuration = "Release",
-    [string]$Runtime = "win-x64",
-    [string]$OutputDir = "publish\win-x64"
-)
 
-# Force terminal and child process streams to UTF-8
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Silence .NET first-run telemetry and logo
-$env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
-$env:DOTNET_NOLOGO = "1"
-
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
-$logsDir = Join-Path $projectRoot "logs"
-if (-not (Test-Path $logsDir)) {
-    New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
-}
-
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$logFileName = "build_$timestamp.log"
-$logFilePath = Join-Path $logsDir $logFileName
-$latestLogPath = Join-Path $logsDir "build_latest.log"
-
-$header = @"
-========================================================
- Task Cleaner (WinUI 3) - Standalone Publish Log
- Start Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
- Log File: $logFilePath
- Project Root: $projectRoot
- Target Runtime: $Runtime
- Configuration: $Configuration
- Output Dir: $OutputDir
-========================================================
-"@
-
-Write-Host $header
-$header | Out-File -FilePath $logFilePath -Encoding utf8
-
-$script:buildExitCode = 0
-
-& {
-    Write-Host "[INFO] Checking .NET SDK environment..."
-    $sdkVersion = dotnet --version 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] .NET SDK not detected. Please install .NET 8 SDK from https://dotnet.microsoft.com/download" -ForegroundColor Red
-        $script:buildExitCode = 1
-        return
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $cargoHome = Join-Path $env:USERPROFILE ".cargo\bin"
+    if (Test-Path $cargoHome) {
+        $env:PATH = "$cargoHome;" + $env:PATH
     }
-    Write-Host "[INFO] Current .NET SDK Version: $sdkVersion"
+}
 
-    Write-Host "[INFO] Publishing $Runtime standalone single-file executable..."
-    $projectPath = "src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj"
-    
-    dotnet publish $projectPath -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -o $OutputDir -v minimal
-    $script:buildExitCode = $LASTEXITCODE
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    Write-Host "[ERROR] Cargo (Rust) not found. Run: winget install Rustlang.Rustup" -ForegroundColor Red
+    exit 1
+}
 
-    if ($script:buildExitCode -ne 0) {
-        Write-Host "[ERROR] Publish build failed with code: $($script:buildExitCode)" -ForegroundColor Red
-    } else {
-        $exePath = Join-Path $OutputDir "TaskCleaner.WinUI.exe"
-        Write-Host "[SUCCESS] Publish successful! Standalone exe located at: $exePath" -ForegroundColor Green
+if (Test-Path "C:\") {
+    $localTarget = "C:\Temp\taskcleaner-target"
+    if (-not (Test-Path $localTarget)) {
+        New-Item -ItemType Directory -Path $localTarget -Force | Out-Null
     }
-} 2>&1 | ForEach-Object {
-    Write-Host $_
-    $_ | Out-File -FilePath $logFilePath -Append -Encoding utf8
+    $env:CARGO_TARGET_DIR = $localTarget
 }
 
-$exitCode = $script:buildExitCode
+Write-Host "[INFO] Building Task Cleaner Suite in Release mode..."
+cargo build --release --workspace
 
-$footer = @"
-
-========================================================
- End Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
- Status: $(if ($exitCode -eq 0) { 'SUCCESS' } else { "FAILED (Code: $exitCode)" })
- Log File: $logFilePath
- Latest Copy: $latestLogPath
-========================================================
-"@
-
-Write-Host $footer
-$footer | Out-File -FilePath $logFilePath -Append -Encoding utf8
-
-try {
-    Copy-Item -Path $logFilePath -Destination $latestLogPath -Force
-} catch {
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Build failed." -ForegroundColor Red
+    exit $LASTEXITCODE
 }
 
-exit $exitCode
+$publishDir = Join-Path $projectRoot "publish"
+if (-not (Test-Path $publishDir)) {
+    New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
+}
+
+$targetBase = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $projectRoot "target" }
+
+Copy-Item -Path (Join-Path $targetBase "release\mtc.exe") -Destination $publishDir -Force
+Copy-Item -Path (Join-Path $targetBase "release\TaskCleaner.exe") -Destination $publishDir -Force
+
+$mtcSize = (Get-Item (Join-Path $publishDir "mtc.exe")).Length / 1MB
+$guiSize = (Get-Item (Join-Path $publishDir "TaskCleaner.exe")).Length / 1MB
+
+Write-Host "========================================================" -ForegroundColor Green
+Write-Host " [SUCCESS] Build Complete! Published to: $publishDir" -ForegroundColor Green
+Write-Host "  * mtc.exe (CLI):          $([math]::Round($mtcSize, 2)) MB" -ForegroundColor Green
+Write-Host "  * TaskCleaner.exe (Tray): $([math]::Round($guiSize, 2)) MB" -ForegroundColor Green
+Write-Host "========================================================" -ForegroundColor Green

@@ -1,115 +1,103 @@
-﻿# Task Cleaner (WinUI 3) - Windows 11 Run and Log Script
+﻿# Task Cleaner (Windows 11) - Rust Native Run and Dev Script
 # Dual-licensed under GNU AGPLv3 and Commercial License.
 param (
-    [string]$Configuration = "Debug"
+    [string]$Mode = "gui",
+    [switch]$Release
 )
 
-# Force terminal and child process streams to UTF-8
+# Force terminal stream to UTF-8
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Silence .NET first-run telemetry and logo
-$env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
-$env:DOTNET_NOLOGO = "1"
-
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
+# Ensure logs directory
 $logsDir = Join-Path $projectRoot "logs"
 if (-not (Test-Path $logsDir)) {
     New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$logFileName = "run_$timestamp.log"
-$logFilePath = Join-Path $logsDir $logFileName
+$logFilePath = Join-Path $logsDir "run_$timestamp.log"
 $latestLogPath = Join-Path $logsDir "run_latest.log"
 
 $header = @"
 ========================================================
- Task Cleaner (WinUI 3) - Execution Session Log
- Start Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
- Log File: $logFilePath
- Working Dir: $projectRoot
- Build Config: $Configuration
+ Task Cleaner (Rust Native Windows 11)
+ Session Log: $timestamp
+ Project Root: $projectRoot
+ Mode: $Mode
 ========================================================
 "@
-
 Write-Host $header
 $header | Out-File -FilePath $logFilePath -Encoding utf8
 
-$script:runExitCode = 0
-
-& {
-    Write-Host "[INFO] Checking .NET SDK environment..."
-    $sdkVersion = dotnet --version 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] .NET SDK not detected. Please install .NET 8 SDK from https://dotnet.microsoft.com/download" -ForegroundColor Red
-        $script:runExitCode = 1
-        return
+# Check cargo path
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $cargoHome = Join-Path $env:USERPROFILE ".cargo\bin"
+    if (Test-Path $cargoHome) {
+        $env:PATH = "$cargoHome;" + $env:PATH
     }
-    Write-Host "[INFO] Current .NET SDK Version: $sdkVersion"
-
-    $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
-    $arch = "win-$platform"
-    Write-Host "[INFO] Detected Platform: $platform, Architecture: $arch"
-    Write-Host "[INFO] Building WinUI 3 Tray App ($Configuration, $arch)..."
-    $projectPath = "src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj"
-    
-    dotnet build $projectPath -c $Configuration -r $arch -p:Platform=$platform -v minimal
-    $buildExit = $LASTEXITCODE
-    if ($buildExit -ne 0) {
-        Write-Host "[ERROR] Build failed with code: $buildExit" -ForegroundColor Red
-        $script:runExitCode = $buildExit
-        return
-    }
-
-    $candidates = @(
-        "src\TaskCleaner.WinUI\bin\$Configuration\net8.0-windows10.0.19041.0\$arch\TaskCleaner.WinUI.exe",
-        "src\TaskCleaner.WinUI\bin\$platform\$Configuration\net8.0-windows10.0.19041.0\$arch\TaskCleaner.WinUI.exe",
-        "src\TaskCleaner.WinUI\bin\$Configuration\net8.0-windows10.0.19041.0\TaskCleaner.WinUI.exe"
-    )
-    $exePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    if ($exePath) {
-        Write-Host "[INFO] Launching WinUI 3 Application: $exePath"
-        & $exePath
-        $script:runExitCode = $LASTEXITCODE
-        if ($script:runExitCode -ne 0) {
-            Write-Host "[ERROR] Application exited with code: $($script:runExitCode)" -ForegroundColor Red
-        } else {
-            Write-Host "[SUCCESS] Application exited normally." -ForegroundColor Green
-        }
-    } else {
-        Write-Host "[ERROR] Could not find built TaskCleaner.WinUI.exe" -ForegroundColor Red
-        $script:runExitCode = 1
-    }
-} 2>&1 | ForEach-Object {
-    Write-Host $_
-    $_ | Out-File -FilePath $logFilePath -Append -Encoding utf8
 }
 
-$exitCode = $script:runExitCode
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $msg = "[ERROR] Cargo (Rust) not found. Please install Rust by running:`nwinget install Rustlang.Rustup`nor visit https://rustup.rs"
+    Write-Host $msg -ForegroundColor Red
+    $msg | Out-File -FilePath $logFilePath -Append -Encoding utf8
+    exit 1
+}
 
-$footer = @"
+$cargoVer = cargo --version
+Write-Host "[INFO] $cargoVer"
+"[INFO] $cargoVer" | Out-File -FilePath $logFilePath -Append -Encoding utf8
 
-========================================================
- End Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')
- Exit Code: $exitCode
- Log File: $logFilePath
- Latest Copy: $latestLogPath
-========================================================
-"@
+# Optimize VM shared folder build speed by using local temp target directory
+if (Test-Path "C:\") {
+    $localTarget = "C:\Temp\taskcleaner-target"
+    if (-not (Test-Path $localTarget)) {
+        New-Item -ItemType Directory -Path $localTarget -Force | Out-Null
+    }
+    $env:CARGO_TARGET_DIR = $localTarget
+    Write-Host "[INFO] Local VM Target Cache: $localTarget (High Performance I/O)"
+}
 
-Write-Host $footer
-$footer | Out-File -FilePath $logFilePath -Append -Encoding utf8
+$configArg = if ($Release) { "--release" } else { "" }
+$binName = if ($Mode -eq "cli" -or $Mode -eq "mtc") { "mtc" } else { "TaskCleaner" }
+
+Write-Host "[INFO] Compiling $binName ($($Release ? 'Release' : 'Debug'))..."
+if ($configArg) {
+    cargo build --bin $binName --release 2>&1 | Tee-Object -FilePath $logFilePath -Append
+} else {
+    cargo build --bin $binName 2>&1 | Tee-Object -FilePath $logFilePath -Append
+}
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Build failed with exit code $LASTEXITCODE" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+$subDir = if ($Release) { "release" } else { "debug" }
+$targetBase = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $projectRoot "target" }
+$exePath = Join-Path $targetBase "$subDir\$binName.exe"
+
+if (-not (Test-Path $exePath)) {
+    Write-Host "[ERROR] Compiled executable not found at: $exePath" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "[SUCCESS] Launching: $exePath" -ForegroundColor Green
+if ($binName -eq "mtc") {
+    & $exePath @args
+} else {
+    Start-Process -FilePath $exePath
+    Write-Host "[INFO] Task Cleaner Tray Application is now active in the system tray (bottom-right)." -ForegroundColor Cyan
+}
 
 try {
     Copy-Item -Path $logFilePath -Destination $latestLogPath -Force
 } catch {
 }
-
-exit $exitCode

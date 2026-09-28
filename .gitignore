@@ -1,3 +1,6 @@
+## Rust
+target/
+
 ## Visual Studio & .NET
 bin/
 obj/
