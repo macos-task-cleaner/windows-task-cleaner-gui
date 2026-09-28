@@ -1,4 +1,4 @@
-﻿# Task Cleaner (WinUI 3) - Windows 11 单文件发布与日志捕获脚本
+# Task Cleaner (WinUI 3) - Windows 11 单文件发布与日志捕获脚本
 # Dual-licensed under GNU AGPLv3 and Commercial License.
 param (
     [string]$Configuration = "Release",
@@ -60,7 +60,7 @@ $script:buildExitCode = 0
     Write-Host "[INFO] 开始发布 $Runtime 独立免安装单文件可执行文件..."
     $projectPath = "src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj"
     
-    dotnet publish $projectPath -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -o $OutputDir
+    dotnet publish $projectPath -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -o $OutputDir -v minimal
     $script:buildExitCode = $LASTEXITCODE
 
     if ($script:buildExitCode -ne 0) {

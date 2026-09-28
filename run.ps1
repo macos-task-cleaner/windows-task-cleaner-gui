@@ -1,4 +1,4 @@
-﻿# Task Cleaner (WinUI 3) - Windows 11 运行与日志捕获脚本
+# Task Cleaner (WinUI 3) - Windows 11 运行与日志捕获脚本
 # Dual-licensed under GNU AGPLv3 and Commercial License.
 param (
     [string]$Configuration = "Debug"
@@ -56,7 +56,7 @@ $script:runExitCode = 0
     Write-Host "[INFO] 正在编译并启动 WinUI 3 托盘应用程序 ($Configuration)..."
     $projectPath = "src\TaskCleaner.WinUI\TaskCleaner.WinUI.csproj"
     
-    dotnet run --project $projectPath -c $Configuration
+    dotnet run --project $projectPath -c $Configuration -v minimal
     $script:runExitCode = $LASTEXITCODE
 
     if ($script:runExitCode -ne 0) {
