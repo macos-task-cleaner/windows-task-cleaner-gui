@@ -75,7 +75,7 @@ mod win_gui {
         GetCursorPos, GetMessageW, GetSystemMetrics, IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
         PostQuitMessage, PrivateExtractIconsW, RegisterClassExW, SetForegroundWindow, SetTimer,
         SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
-        CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST, ICONINFO, IDC_ARROW,
+        CS_DROPSHADOW, DI_NORMAL, HICON, HWND_TOPMOST, ICONINFO, IDC_ARROW,
         MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_TOPMOST,
         MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_NOACTIVATE,
         SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
@@ -1609,7 +1609,7 @@ mod win_gui {
             });
         } else {
             for (i, t) in targets.iter().take(32).enumerate() {
-                let label = format!("{} ({:.1} MB)", t.name, t.memory_mb());
+                let label = format!("{} ({:.1} MB)", t.name, t.private_ws_mb());
                 let row_actions = vec![
                     FluentMenuItem::action(IDM_KILL_TARGET_BASE + i, "结束该任务", Some('\u{E711}')),
                     FluentMenuItem::action(IDM_PROTECT_TARGET_BASE + i, "加入白名单保护", Some('\u{EA18}')),
@@ -1646,7 +1646,7 @@ mod win_gui {
             });
         } else {
             for (i, (t, _)) in protected.iter().take(32).enumerate() {
-                let label = format!("{} ({:.1} MB)", t.name, t.memory_mb());
+                let label = format!("{} ({:.1} MB)", t.name, t.private_ws_mb());
                 let row_actions = vec![
                     FluentMenuItem::action(IDM_UNPROTECT_BASE + i, "解除保护", Some('\u{E711}')),
                     FluentMenuItem::action(IDM_REVEAL_PROTECTED_BASE + i, "在资源管理器中定位", Some('\u{ED25}')),
