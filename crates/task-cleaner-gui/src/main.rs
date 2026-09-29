@@ -1,5 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod fluent_menu;
+
 #[cfg(not(windows))]
 fn main() {
     println!("Task Cleaner GUI is designed for Windows 11. Run on Windows to launch tray application.");
@@ -67,21 +70,22 @@ mod win_gui {
         NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, FindWindowW, GetClientRect,
+        CreateIconIndirect, CreateWindowExW, DefWindowProcW,
+        DestroyIcon, DestroyWindow, DispatchMessageW, DrawIconEx, FindWindowW, GetClientRect,
         GetCursorPos, GetMessageW, GetSystemMetrics, IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
         PostQuitMessage, PrivateExtractIconsW, RegisterClassExW, SetForegroundWindow, SetTimer,
-        SetWindowPos, ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage,
-        CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST, ICONINFO, IDC_ARROW,
-        MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_TOPMOST, MF_CHECKED, MF_POPUP,
-        MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_NOACTIVATE,
-        SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_BOTTOMALIGN,
-        TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_TOPALIGN, WM_ACTIVATE, WM_DESTROY,
-        WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP,
-        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_SYSKEYDOWN,
-        WM_SYSKEYUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_CAPTION, WS_EX_TOOLWINDOW,
+        SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
+        CS_DROPSHADOW, DI_NORMAL, HICON, HWND_TOPMOST, ICONINFO, IDC_ARROW,
+        MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_TOPMOST,
+        MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SWP_NOACTIVATE,
+        SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
+        WM_ACTIVATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP,
+        WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETTINGCHANGE,
+        WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_USER, WNDCLASSEXW, WS_CAPTION, WS_EX_TOOLWINDOW,
         WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
     };
+
+    use crate::fluent_menu::*;
 
     const WM_TRAYICON: u32 = WM_USER + 101;
     const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -190,6 +194,14 @@ mod win_gui {
     // 语言切换菜单基址 (支持 24 种语言 + 自动)
     const IDM_LANG_AUTO: usize = 1500;
     const IDM_LANG_BASE: usize = 1501;
+
+    // 动态目标操作基址 (用于 TranslucentTB 级联分级菜单)
+    const IDM_KILL_TARGET_BASE: usize = 2000;
+    const IDM_PROTECT_TARGET_BASE: usize = 2100;
+    const IDM_REVEAL_TARGET_BASE: usize = 2200;
+    const IDM_PURGE_TARGET_BASE: usize = 2300;
+    const IDM_UNPROTECT_BASE: usize = 2400;
+    const IDM_REVEAL_PROTECTED_BASE: usize = 2500;
 
     // 窗口尺寸: 严格对齐 macOS 版精修比例 (宽 320, 高 480)
     const WINDOW_WIDTH: i32 = 320;
@@ -1543,32 +1555,253 @@ mod win_gui {
         InvalidateRect(parent_hwnd, std::ptr::null(), 1);
     }
 
-    unsafe fn show_tray_context_menu(hwnd: HWND) {
-        let lang = STATE.lock().unwrap().as_ref().map(|s| s.active_language).unwrap_or(Language::En);
-        let mut pt: POINT = std::mem::zeroed();
-        GetCursorPos(&mut pt);
+    unsafe fn build_fluent_tiered_menu(hwnd: HWND) -> Vec<FluentMenuItem> {
+        let (lang, prefs, targets, protected) = {
+            let state_guard = STATE.lock().unwrap();
+            let s = match state_guard.as_ref() {
+                Some(s) => s,
+                None => return Vec::new(),
+            };
+            (s.active_language, s.prefs.clone(), s.targets.clone(), s.protected.clone())
+        };
 
-        let menu: HMENU = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, IDM_OPEN, to_wstring("打开 Task Cleaner").as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_REFRESH, to_wstring(tr(I18nKey::HeaderRefreshHelp, lang)).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_CLEAN_ALL, to_wstring(tr(I18nKey::BtnTerminate, lang)).as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_QUIT, to_wstring(tr(I18nKey::BtnQuit, lang)).as_ptr());
+        let mut items = Vec::new();
 
-        SetForegroundWindow(hwnd);
-        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
-        let cmd = TrackPopupMenuEx(
-            menu,
-            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            pt.x,
-            pt.y,
-            hwnd,
-            std::ptr::null(),
-        );
-        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
-        DestroyMenu(menu);
+        // 1. 一键退出全部待清理任务 (含快捷键提示)
+        let clean_all_shortcut = if prefs.hotkey.enabled {
+            prefs.hotkey.display.clone()
+        } else {
+            String::new()
+        };
+        if !clean_all_shortcut.is_empty() {
+            items.push(FluentMenuItem::action_with_shortcut(
+                IDM_CLEAN_ALL,
+                tr(I18nKey::BtnTerminate, lang),
+                Some('\u{E74D}'),
+                clean_all_shortcut,
+            ));
+        } else {
+            items.push(FluentMenuItem::action(
+                IDM_CLEAN_ALL,
+                tr(I18nKey::BtnTerminate, lang),
+                Some('\u{E74D}'),
+            ));
+        }
 
-        match cmd as usize {
+        // 清理执行策略子菜单
+        let clean_options = vec![
+            FluentMenuItem::action(IDM_ACTION_GRACEFUL, tr(I18nKey::ActionCleanGraceful, lang), Some('\u{E74D}')),
+            FluentMenuItem::action(IDM_ACTION_FORCE, tr(I18nKey::ActionCleanForce, lang), Some('\u{E711}')),
+            FluentMenuItem::separator(),
+            FluentMenuItem::action(IDM_ACTION_PURGE, tr(I18nKey::ActionCleanPurge, lang), Some('\u{E894}')),
+        ];
+        items.push(FluentMenuItem::submenu("清理执行策略", Some('\u{E894}'), clean_options));
+
+        // 2. 待结束应用分级子菜单 (Killable Apps Submenu)
+        let mut target_subitems = Vec::new();
+        if targets.is_empty() {
+            target_subitems.push(FluentMenuItem {
+                text: "当前无待结束任务".to_string(),
+                icon: None,
+                shortcut: None,
+                kind: MenuItemKind::Action(0),
+                enabled: false,
+            });
+        } else {
+            for (i, t) in targets.iter().take(32).enumerate() {
+                let label = format!("{} ({:.1} MB)", t.name, t.private_ws_mb());
+                let row_actions = vec![
+                    FluentMenuItem::action(IDM_KILL_TARGET_BASE + i, "结束该任务", Some('\u{E711}')),
+                    FluentMenuItem::action(IDM_PROTECT_TARGET_BASE + i, "加入白名单保护", Some('\u{EA18}')),
+                    FluentMenuItem::action(IDM_REVEAL_TARGET_BASE + i, "在资源管理器中定位", Some('\u{ED25}')),
+                    FluentMenuItem::action(IDM_PURGE_TARGET_BASE + i, "释放工作集内存", Some('\u{E894}')),
+                ];
+                target_subitems.push(FluentMenuItem::submenu(label, Some('\u{E71D}'), row_actions));
+            }
+            if targets.len() > 32 {
+                target_subitems.push(FluentMenuItem {
+                    text: format!("... 及其余 {} 个任务", targets.len() - 32),
+                    icon: None,
+                    shortcut: None,
+                    kind: MenuItemKind::Action(0),
+                    enabled: false,
+                });
+            }
+        }
+        items.push(FluentMenuItem::submenu(
+            format!("待结束任务 ({})", targets.len()),
+            Some('\u{E71D}'),
+            target_subitems,
+        ));
+
+        // 3. 白名单保护应用分级子菜单 (Protected Apps Submenu)
+        let mut protected_subitems = Vec::new();
+        if protected.is_empty() {
+            protected_subitems.push(FluentMenuItem {
+                text: "当前无受保护应用".to_string(),
+                icon: None,
+                shortcut: None,
+                kind: MenuItemKind::Action(0),
+                enabled: false,
+            });
+        } else {
+            for (i, (t, _)) in protected.iter().take(32).enumerate() {
+                let label = format!("{} ({:.1} MB)", t.name, t.private_ws_mb());
+                let row_actions = vec![
+                    FluentMenuItem::action(IDM_UNPROTECT_BASE + i, "解除保护", Some('\u{E711}')),
+                    FluentMenuItem::action(IDM_REVEAL_PROTECTED_BASE + i, "在资源管理器中定位", Some('\u{ED25}')),
+                ];
+                protected_subitems.push(FluentMenuItem::submenu(label, Some('\u{EA18}'), row_actions));
+            }
+            if protected.len() > 32 {
+                protected_subitems.push(FluentMenuItem {
+                    text: format!("... 及其余 {} 个受保护应用", protected.len() - 32),
+                    icon: None,
+                    shortcut: None,
+                    kind: MenuItemKind::Action(0),
+                    enabled: false,
+                });
+            }
+        }
+        items.push(FluentMenuItem::submenu(
+            format!("受保护应用 ({})", protected.len()),
+            Some('\u{EA18}'),
+            protected_subitems,
+        ));
+
+        items.push(FluentMenuItem::separator());
+
+        // 4. 开机自动启动开关
+        let autostart_on = is_autostart_enabled();
+        items.push(FluentMenuItem::toggle(
+            IDM_CFG_STARTUP,
+            tr(I18nKey::MenuLaunchAtLogin, lang),
+            autostart_on,
+            None,
+        ));
+
+        // 5. 全局清理快捷键子菜单
+        let mut hk_items = Vec::new();
+        hk_items.push(FluentMenuItem::toggle(
+            IDM_HOTKEY_TOGGLE_ENABLE,
+            "启用全局清理快捷键",
+            prefs.hotkey.enabled,
+            None,
+        ));
+        hk_items.push(FluentMenuItem::separator());
+        for (i, p) in PRESETS.iter().enumerate() {
+            let is_matched = prefs.hotkey.enabled && prefs.hotkey.modifiers == p.modifiers && prefs.hotkey.vk == p.vk;
+            hk_items.push(FluentMenuItem::radio(IDM_HOTKEY_PRESET_BASE + i, p.display, is_matched));
+        }
+        hk_items.push(FluentMenuItem::separator());
+        hk_items.push(FluentMenuItem::action(
+            IDM_HOTKEY_CUSTOM_RECORDER,
+            "自定义快捷键录制...",
+            Some('\u{E765}'),
+        ));
+        let cur_hk_summary = if prefs.hotkey.enabled {
+            prefs.hotkey.display.as_str()
+        } else {
+            "已禁用"
+        };
+        items.push(FluentMenuItem::submenu(
+            format!("{}: {}", tr(I18nKey::MenuGlobalShortcut, lang), cur_hk_summary),
+            Some('\u{E765}'),
+            hk_items,
+        ));
+
+        // 6. 任务排序方式子菜单
+        let sort_items = vec![
+            FluentMenuItem::radio(IDM_SORT_COMPOSITE, tr(I18nKey::SortComposite, lang), prefs.sort_mode == SortMode::Composite),
+            FluentMenuItem::radio(IDM_SORT_MEMORY, tr(I18nKey::SortMemory, lang), prefs.sort_mode == SortMode::Memory),
+            FluentMenuItem::radio(IDM_SORT_CPU, tr(I18nKey::SortCpu, lang), prefs.sort_mode == SortMode::Cpu),
+            FluentMenuItem::radio(IDM_SORT_WINDOWS, tr(I18nKey::SortWindows, lang), prefs.sort_mode == SortMode::Windows),
+            FluentMenuItem::radio(IDM_SORT_DEFAULT, tr(I18nKey::SortDefault, lang), prefs.sort_mode == SortMode::Default),
+        ];
+        items.push(FluentMenuItem::submenu(
+            format!("{}: {}", tr(I18nKey::MenuSortBy, lang), prefs.sort_mode.label()),
+            Some('\u{E8CB}'),
+            sort_items,
+        ));
+
+        // 7. 界面显示偏好子菜单
+        let disp_items = vec![
+            FluentMenuItem::toggle(IDM_CFG_TOGGLE_DETAILED_METRICS, tr(I18nKey::MenuShowDetailedMetrics, lang), prefs.show_detailed_metrics, None),
+            FluentMenuItem::toggle(IDM_CFG_TOGGLE_APP_ID, tr(I18nKey::MenuShowAppIdentifier, lang), prefs.show_app_identifier, None),
+            FluentMenuItem::toggle(IDM_CFG_TOGGLE_SORT_BTN, tr(I18nKey::MenuShowSortButton, lang), prefs.show_sort_button, None),
+        ];
+        items.push(FluentMenuItem::submenu("界面显示偏好", Some('\u{E790}'), disp_items));
+
+        // 8. CLI 命令行工具 (mtc) 子菜单
+        let installed_path = CliManager::find_installed_cli();
+        let bundled_path = CliManager::get_bundled_cli_path();
+        let cli_installed = installed_path.is_some();
+        let cli_has_any = cli_installed || bundled_path.is_some();
+
+        let mut cli_items = Vec::new();
+        let cli_status_str = if cli_installed {
+            format!("{}: 全局已就绪", tr(I18nKey::CliStatusInstalled, lang))
+        } else if bundled_path.is_some() {
+            format!("{}: 开发就绪 (免安装可用)", tr(I18nKey::CliStatusInstalled, lang))
+        } else {
+            format!("{}: 未安装", tr(I18nKey::CliStatusNotInstalled, lang))
+        };
+        cli_items.push(FluentMenuItem {
+            text: cli_status_str,
+            icon: Some('\u{E946}'),
+            shortcut: None,
+            kind: MenuItemKind::Action(0),
+            enabled: false,
+        });
+        cli_items.push(FluentMenuItem::separator());
+        if !cli_installed {
+            cli_items.push(FluentMenuItem::action(IDM_CLI_INSTALL_USER, tr(I18nKey::CliMenuInstallUser, lang), Some('\u{E756}')));
+        }
+        if cli_has_any {
+            cli_items.push(FluentMenuItem::action(IDM_CLI_TEST_TERMINAL, tr(I18nKey::CliMenuTest, lang), Some('\u{E756}')));
+            cli_items.push(FluentMenuItem::action(IDM_CLI_REVEAL, tr(I18nKey::CliMenuReveal, lang), Some('\u{ED25}')));
+        }
+        if cli_installed {
+            cli_items.push(FluentMenuItem::separator());
+            cli_items.push(FluentMenuItem::action(IDM_CLI_UNINSTALL, tr(I18nKey::CliMenuUninstall, lang), Some('\u{E711}')));
+        }
+        items.push(FluentMenuItem::submenu(tr(I18nKey::MenuCliTools, lang), Some('\u{E756}'), cli_items));
+
+        // 9. 语言偏好设置子菜单
+        let mut lang_items = Vec::new();
+        lang_items.push(FluentMenuItem::radio(IDM_LANG_AUTO, tr(I18nKey::LangAuto, lang), prefs.language_pref == LanguagePreference::Auto));
+        lang_items.push(FluentMenuItem::separator());
+        for (idx, &l) in Language::ALL.iter().enumerate() {
+            let checked = prefs.language_pref == LanguagePreference::Specific(l);
+            lang_items.push(FluentMenuItem::radio(IDM_LANG_BASE + idx, l.display_name(), checked));
+        }
+        items.push(FluentMenuItem::submenu(
+            format!("语言 / Language ({})", lang.display_name()),
+            Some('\u{E774}'),
+            lang_items,
+        ));
+
+        items.push(FluentMenuItem::separator());
+
+        // 10. 详细控制面板与系统设置
+        items.push(FluentMenuItem::action(IDM_OPEN, "打开详细控制面板", Some('\u{E737}')));
+        items.push(FluentMenuItem::action(IDM_REFRESH, tr(I18nKey::HeaderRefreshHelp, lang), Some('\u{E72C}')));
+        items.push(FluentMenuItem::action(IDM_CFG_RELOAD, "重新加载配置与白名单", Some('\u{E72C}')));
+        items.push(FluentMenuItem::action(IDM_CFG_OPEN_FILE, tr(I18nKey::MenuOpenConfigFile, lang), Some('\u{E8A5}')));
+        items.push(FluentMenuItem::action(IDM_CFG_OPEN_DIR, tr(I18nKey::MenuOpenConfigDir, lang), Some('\u{ED25}')));
+        items.push(FluentMenuItem::action(IDM_CFG_GITHUB, tr(I18nKey::MenuGithubRepo, lang), Some('\u{E71B}')));
+        items.push(FluentMenuItem::action(IDM_CFG_ABOUT, tr(I18nKey::BtnAbout, lang), Some('\u{E946}')));
+
+        items.push(FluentMenuItem::separator());
+
+        // 11. 退出
+        items.push(FluentMenuItem::action(IDM_QUIT, tr(I18nKey::BtnQuit, lang), Some('\u{E711}')));
+
+        items
+    }
+
+    unsafe fn handle_menu_command(hwnd: HWND, cmd: usize) {
+        match cmd {
             IDM_OPEN => {
                 refresh_scan();
                 position_window(hwnd);
@@ -1581,120 +1814,7 @@ mod win_gui {
                 refresh_scan();
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
-            IDM_CLEAN_ALL => {
-                execute_clean_all(TerminationMode::Standard);
-                refresh_scan();
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_QUIT => {
-                PostQuitMessage(0);
-            }
-            _ => {}
-        }
-    }
-
-    unsafe fn show_sort_menu(hwnd: HWND) {
-        let (cur_mode, lang) = {
-            let state = STATE.lock().unwrap();
-            let s = state.as_ref().unwrap();
-            (s.prefs.sort_mode, s.active_language)
-        };
-
-        let menu: HMENU = CreatePopupMenu();
-        let add_item = |m: HMENU, id: usize, title: &str, checked: bool| {
-            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
-            AppendMenuW(m, flags, id, to_wstring(title).as_ptr());
-        };
-
-        add_item(menu, IDM_SORT_COMPOSITE, tr(I18nKey::SortComposite, lang), cur_mode == SortMode::Composite);
-        add_item(menu, IDM_SORT_MEMORY, tr(I18nKey::SortMemory, lang), cur_mode == SortMode::Memory);
-        add_item(menu, IDM_SORT_CPU, tr(I18nKey::SortCpu, lang), cur_mode == SortMode::Cpu);
-        add_item(menu, IDM_SORT_WINDOWS, tr(I18nKey::SortWindows, lang), cur_mode == SortMode::Windows);
-        add_item(menu, IDM_SORT_DEFAULT, tr(I18nKey::SortDefault, lang), cur_mode == SortMode::Default);
-
-        let dpi = GetDpiForWindow(hwnd).max(96);
-        let mut pt = POINT { x: scale_dpi(260, dpi), y: scale_dpi(38, dpi) };
-        ClientToScreen(hwnd, &mut pt);
-
-        SetForegroundWindow(hwnd);
-        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
-        let cmd = TrackPopupMenuEx(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
-            pt.x,
-            pt.y,
-            hwnd,
-            std::ptr::null(),
-        );
-        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
-        DestroyMenu(menu);
-
-        {
-            let mut state_guard = STATE.lock().unwrap();
-            if let Some(state) = state_guard.as_mut() {
-                state.hovered_btn = None;
-            }
-        }
-        InvalidateRect(hwnd, std::ptr::null(), 0);
-
-        let new_mode = match cmd as usize {
-            IDM_SORT_COMPOSITE => Some(SortMode::Composite),
-            IDM_SORT_MEMORY => Some(SortMode::Memory),
-            IDM_SORT_CPU => Some(SortMode::Cpu),
-            IDM_SORT_WINDOWS => Some(SortMode::Windows),
-            IDM_SORT_DEFAULT => Some(SortMode::Default),
-            _ => None,
-        };
-
-        if let Some(mode) = new_mode {
-            let mut state_guard = STATE.lock().unwrap();
-            if let Some(state) = state_guard.as_mut() {
-                state.prefs.sort_mode = mode;
-                state.prefs.save();
-                sort_targets(&mut state.targets, mode);
-                sort_protected(&mut state.protected, mode);
-                state.status_message = Some(format!("{}: {}", tr(I18nKey::MenuSortBy, state.active_language), mode.label()));
-                state.status_timestamp = Some(Instant::now());
-            }
-            InvalidateRect(hwnd, std::ptr::null(), 1);
-        }
-    }
-
-    unsafe fn show_action_chevron_menu(hwnd: HWND) {
-        let lang = STATE.lock().unwrap().as_ref().map(|s| s.active_language).unwrap_or(Language::En);
-        let menu: HMENU = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, IDM_ACTION_GRACEFUL, to_wstring(tr(I18nKey::ActionCleanGraceful, lang)).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ACTION_FORCE, to_wstring(tr(I18nKey::ActionCleanForce, lang)).as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_ACTION_PURGE, to_wstring(tr(I18nKey::ActionCleanPurge, lang)).as_ptr());
-
-        let dpi = GetDpiForWindow(hwnd).max(96);
-        let mut pt = POINT { x: scale_dpi(298, dpi), y: scale_dpi(124, dpi) };
-        ClientToScreen(hwnd, &mut pt);
-
-        SetForegroundWindow(hwnd);
-        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
-        let cmd = TrackPopupMenuEx(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
-            pt.x,
-            pt.y,
-            hwnd,
-            std::ptr::null(),
-        );
-        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
-        DestroyMenu(menu);
-
-        {
-            let mut state_guard = STATE.lock().unwrap();
-            if let Some(state) = state_guard.as_mut() {
-                state.hovered_btn = None;
-            }
-        }
-        InvalidateRect(hwnd, std::ptr::null(), 0);
-
-        match cmd as usize {
-            IDM_ACTION_GRACEFUL => {
+            IDM_CLEAN_ALL | IDM_ACTION_GRACEFUL => {
                 execute_clean_all(TerminationMode::Standard);
                 refresh_scan();
                 InvalidateRect(hwnd, std::ptr::null(), 1);
@@ -1709,67 +1829,402 @@ mod win_gui {
                 refresh_scan_silent();
                 InvalidateRect(hwnd, std::ptr::null(), 1);
             }
+            IDM_QUIT => {
+                PostQuitMessage(0);
+            }
+            IDM_CFG_STARTUP => {
+                let now_enabled = toggle_autostart();
+                let status = if now_enabled {
+                    "已开启开机自动启动"
+                } else {
+                    "已关闭开机自动启动"
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(status.to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_HOTKEY_TOGGLE_ENABLE => {
+                let (new_enabled, cfg) = {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.prefs.hotkey.enabled = !state.prefs.hotkey.enabled;
+                        let enabled = state.prefs.hotkey.enabled;
+                        let cfg = state.prefs.hotkey.clone();
+                        state.prefs.save();
+                        (enabled, cfg)
+                    } else {
+                        (false, HotkeyConfig::default())
+                    }
+                };
+                apply_hotkey(hwnd, &cfg);
+                let status = if new_enabled {
+                    format!("一键清理快捷键已开启: {}", cfg.display)
+                } else {
+                    "一键清理快捷键已关闭".to_string()
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(status);
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_HOTKEY_CUSTOM_RECORDER => {
+                show_shortcut_recorder_dialog(hwnd);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            cmd if (IDM_HOTKEY_PRESET_BASE..IDM_HOTKEY_PRESET_BASE + PRESETS.len()).contains(&cmd) => {
+                let idx = cmd - IDM_HOTKEY_PRESET_BASE;
+                let preset = &PRESETS[idx];
+                let new_cfg = HotkeyConfig {
+                    enabled: true,
+                    modifiers: preset.modifiers,
+                    vk: preset.vk,
+                    display: match preset.name {
+                        "CtrlAltK" => "Ctrl + Alt + K".to_string(),
+                        "CtrlShiftK" => "Ctrl + Shift + K".to_string(),
+                        "AltShiftK" => "Alt + Shift + K".to_string(),
+                        "CtrlAltX" => "Ctrl + Alt + X".to_string(),
+                        "WinAltK" => "Win + Alt + K".to_string(),
+                        "WinShiftK" => "Win + Shift + K".to_string(),
+                        _ => preset.display.to_string(),
+                    },
+                };
+                let ok = apply_hotkey(hwnd, &new_cfg);
+                if ok {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.prefs.hotkey = new_cfg.clone();
+                        state.prefs.save();
+                        state.status_message = Some(format!("一键清理快捷键已设为: {}", new_cfg.display));
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                } else {
+                    let old_cfg = {
+                        let state_guard = STATE.lock().unwrap();
+                        state_guard.as_ref().map(|s| s.prefs.hotkey.clone()).unwrap_or_default()
+                    };
+                    apply_hotkey(hwnd, &old_cfg);
+                    MessageBoxW(
+                        hwnd,
+                        to_wstring(&format!("快捷键「{}」已被系统或其他正在运行的软件占用，请选择其他预设或自定义录制！", new_cfg.display)).as_ptr(),
+                        to_wstring("快捷键冲突").as_ptr(),
+                        MB_OK | MB_ICONWARNING | MB_TOPMOST,
+                    );
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_RELOAD => {
+                let fresh_prefs = GuiPreferences::load();
+                apply_hotkey(hwnd, &fresh_prefs.hotkey);
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.whitelist = WhitelistManager::new();
+                    state.prefs = fresh_prefs;
+                    state.status_message = Some("配置与白名单规则已重新加载".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                refresh_scan();
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_TOGGLE_DETAILED_METRICS => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.show_detailed_metrics = !state.prefs.show_detailed_metrics;
+                    state.prefs.save();
+                    let s = if state.prefs.show_detailed_metrics { "已开启详细指标" } else { "已关闭详细指标" };
+                    state.status_message = Some(s.to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_TOGGLE_APP_ID => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.show_app_identifier = !state.prefs.show_app_identifier;
+                    state.prefs.save();
+                    let s = if state.prefs.show_app_identifier { "已开启进程标识" } else { "已关闭进程标识" };
+                    state.status_message = Some(s.to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_TOGGLE_SORT_BTN => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.show_sort_button = !state.prefs.show_sort_button;
+                    state.prefs.save();
+                    let s = if state.prefs.show_sort_button { "已显示排序按钮" } else { "已隐藏排序按钮" };
+                    state.status_message = Some(s.to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_SORT_COMPOSITE | IDM_SORT_MEMORY | IDM_SORT_CPU | IDM_SORT_WINDOWS | IDM_SORT_DEFAULT => {
+                let new_mode = match cmd {
+                    IDM_SORT_COMPOSITE => SortMode::Composite,
+                    IDM_SORT_MEMORY => SortMode::Memory,
+                    IDM_SORT_CPU => SortMode::Cpu,
+                    IDM_SORT_WINDOWS => SortMode::Windows,
+                    _ => SortMode::Default,
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.sort_mode = new_mode;
+                    state.prefs.save();
+                    sort_targets(&mut state.targets, new_mode);
+                    sort_protected(&mut state.protected, new_mode);
+                    state.status_message = Some(format!("{}: {}", tr(I18nKey::MenuSortBy, state.active_language), new_mode.label()));
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CLI_INSTALL_USER => {
+                let res = CliManager::install();
+                let status = match res {
+                    Ok(p) => format!("CLI 已成功安装至: {}", p.display()),
+                    Err(e) => format!("CLI 安装失败: {}", e),
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(status);
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CLI_TEST_TERMINAL => {
+                CliManager::test_in_terminal();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("正在终端中启动 mtc...".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CLI_REVEAL => {
+                CliManager::reveal_in_explorer();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("正在文件资源管理器中定位 mtc.exe...".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CLI_UNINSTALL => {
+                let res = CliManager::uninstall();
+                let status = match res {
+                    Ok(_) => "CLI 工具已从用户路径移除".to_string(),
+                    Err(e) => format!("CLI 卸载失败: {}", e),
+                };
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some(status);
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_OPEN_FILE => {
+                let path = WhitelistManager::get_config_path();
+                if !path.exists() {
+                    let dir = WhitelistManager::get_config_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(&path, "# Task Cleaner Configuration\n");
+                }
+                let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("已在记事本中打开配置文件".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_OPEN_DIR => {
+                let dir = WhitelistManager::get_config_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.status_message = Some("已在资源管理器中打开配置目录".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            IDM_CFG_GITHUB => {
+                let wverb = to_wstring("open");
+                let wurl = to_wstring("https://github.com/macos-task-cleaner/windows-task-cleaner-gui");
+                ShellExecuteW(0 as HWND, wverb.as_ptr(), wurl.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
+            }
+            IDM_CFG_ABOUT => {
+                let cur_shortcut = {
+                    let state_guard = STATE.lock().unwrap();
+                    state_guard
+                        .as_ref()
+                        .map(|s| {
+                            if s.prefs.hotkey.enabled {
+                                s.prefs.hotkey.display.clone()
+                            } else {
+                                "已禁用".to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "Ctrl + Alt + K".to_string())
+                };
+                let caption = to_wstring("Task Cleaner");
+                let msg = to_wstring(&format!("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n全局清理快捷键: {} (一键退出全部未保护任务)\n\n轻量优雅的一体化前台任务管理、白名单保护与内存工作集深度释放套件。\n100% 独立原生 Rust 二进制，零外部重型依赖。", cur_shortcut));
+                MessageBoxW(
+                    hwnd,
+                    msg.as_ptr(),
+                    caption.as_ptr(),
+                    MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
+                );
+            }
+            IDM_LANG_AUTO => {
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.language_pref = LanguagePreference::Auto;
+                    state.active_language = detect_system_language();
+                    state.prefs.save();
+                    state.status_message = Some("语言已设置为跟随系统".to_string());
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            cmd if (IDM_LANG_BASE..IDM_LANG_BASE + Language::ALL.len()).contains(&cmd) => {
+                let target_lang = Language::ALL[cmd - IDM_LANG_BASE];
+                let mut state_guard = STATE.lock().unwrap();
+                if let Some(state) = state_guard.as_mut() {
+                    state.prefs.language_pref = LanguagePreference::Specific(target_lang);
+                    state.active_language = target_lang;
+                    state.prefs.save();
+                    state.status_message = Some(format!("语言已切换为: {}", target_lang.display_name()));
+                    state.status_timestamp = Some(Instant::now());
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+            }
+            cmd if (IDM_KILL_TARGET_BASE..IDM_KILL_TARGET_BASE + 100).contains(&cmd) => {
+                let idx = cmd - IDM_KILL_TARGET_BASE;
+                let app = {
+                    let state = STATE.lock().unwrap();
+                    state.as_ref().and_then(|s| s.targets.get(idx).cloned())
+                };
+                if let Some(app) = app {
+                    if is_explorer(&app.name) || is_explorer(&app.bundle_id) {
+                        let mut state_guard = STATE.lock().unwrap();
+                        if let Some(state) = state_guard.as_mut() {
+                            state.status_message = Some("系统资源管理器严禁强制终止".to_string());
+                            state.status_timestamp = Some(Instant::now());
+                        }
+                    } else {
+                        #[cfg(windows)]
+                        {
+                            let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, app.pid) };
+                            if !handle.is_null() {
+                                unsafe {
+                                    TerminateProcess(handle, 1);
+                                    CloseHandle(handle);
+                                }
+                            }
+                        }
+                        let mut state_guard = STATE.lock().unwrap();
+                        if let Some(state) = state_guard.as_mut() {
+                            state.status_message = Some(format!("已结束: {}", app.name));
+                            state.status_timestamp = Some(Instant::now());
+                        }
+                    }
+                    refresh_scan();
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
+                }
+            }
+            cmd if (IDM_PROTECT_TARGET_BASE..IDM_PROTECT_TARGET_BASE + 100).contains(&cmd) => {
+                let idx = cmd - IDM_PROTECT_TARGET_BASE;
+                let app = {
+                    let state = STATE.lock().unwrap();
+                    state.as_ref().and_then(|s| s.targets.get(idx).cloned())
+                };
+                if let Some(app) = app {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.whitelist.protect(&app.name);
+                        if let Some(exe_name) = std::path::Path::new(&app.exe_path).file_name().and_then(|n| n.to_str()) {
+                            state.whitelist.protect(exe_name);
+                        }
+                        state.status_message = Some(format!("已将 {} 加入保护名单", app.name));
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                    refresh_scan();
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
+                }
+            }
+            cmd if (IDM_REVEAL_TARGET_BASE..IDM_REVEAL_TARGET_BASE + 100).contains(&cmd) => {
+                let idx = cmd - IDM_REVEAL_TARGET_BASE;
+                let path = {
+                    let state = STATE.lock().unwrap();
+                    state.as_ref().and_then(|s| s.targets.get(idx).map(|t| t.exe_path.clone()))
+                };
+                if let Some(path) = path {
+                    if !path.is_empty() {
+                        reveal_file_in_explorer(&path);
+                    }
+                }
+            }
+            cmd if (IDM_PURGE_TARGET_BASE..IDM_PURGE_TARGET_BASE + 100).contains(&cmd) => {
+                let idx = cmd - IDM_PURGE_TARGET_BASE;
+                let target = {
+                    let state = STATE.lock().unwrap();
+                    state.as_ref().and_then(|s| s.targets.get(idx).map(|t| (t.pid, t.name.clone())))
+                };
+                if let Some((pid, name)) = target {
+                    purge_process_working_set(pid);
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.status_message = Some(format!("{}: {}", tr(I18nKey::ActionCleanPurge, state.active_language), name));
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                    refresh_scan_silent();
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
+                }
+            }
+            cmd if (IDM_UNPROTECT_BASE..IDM_UNPROTECT_BASE + 100).contains(&cmd) => {
+                let idx = cmd - IDM_UNPROTECT_BASE;
+                let app = {
+                    let state = STATE.lock().unwrap();
+                    state.as_ref().and_then(|s| s.protected.get(idx).map(|(t, _)| t.clone()))
+                };
+                if let Some(app) = app {
+                    let mut state_guard = STATE.lock().unwrap();
+                    if let Some(state) = state_guard.as_mut() {
+                        state.whitelist.unprotect(&app.name);
+                        if let Some(exe_name) = std::path::Path::new(&app.exe_path).file_name().and_then(|n| n.to_str()) {
+                            state.whitelist.unprotect(exe_name);
+                        }
+                        state.status_message = Some(format!("已解除 {} 的保护状态", app.name));
+                        state.status_timestamp = Some(Instant::now());
+                    }
+                    refresh_scan();
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
+                }
+            }
+            cmd if (IDM_REVEAL_PROTECTED_BASE..IDM_REVEAL_PROTECTED_BASE + 100).contains(&cmd) => {
+                let idx = cmd - IDM_REVEAL_PROTECTED_BASE;
+                let path = {
+                    let state = STATE.lock().unwrap();
+                    state.as_ref().and_then(|s| s.protected.get(idx).map(|(t, _)| t.exe_path.clone()))
+                };
+                if let Some(path) = path {
+                    if !path.is_empty() {
+                        reveal_file_in_explorer(&path);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    unsafe fn show_row_more_menu(hwnd: HWND, actual_idx: usize) {
-        let (app_info, lang) = {
-            let state_guard = STATE.lock().unwrap();
-            let state = match state_guard.as_ref() {
-                Some(s) => s,
-                None => return,
-            };
-            (get_item_at(state, actual_idx), state.active_language)
-        };
-
-        let (app, is_protected) = match app_info {
-            Some(v) => v,
-            None => return,
-        };
-
-        let menu: HMENU = CreatePopupMenu();
-        if is_protected {
-            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_REMOVE, to_wstring(tr(I18nKey::RowRemoveWhitelist, lang)).as_ptr());
-            AppendMenuW(menu, MF_STRING, IDM_ROW_PURGE_MEMORY, to_wstring(tr(I18nKey::RowPurgeMemory, lang)).as_ptr());
-        } else {
-            AppendMenuW(menu, MF_STRING, IDM_ROW_WHITELIST_ADD, to_wstring(tr(I18nKey::RowAddWhitelist, lang)).as_ptr());
-            AppendMenuW(menu, MF_STRING, IDM_ROW_FORCE_KILL, to_wstring(tr(I18nKey::RowForceKill, lang)).as_ptr());
-            AppendMenuW(menu, MF_STRING, IDM_ROW_PURGE_MEMORY, to_wstring(tr(I18nKey::RowPurgeMemory, lang)).as_ptr());
-        }
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_REVEAL, to_wstring(tr(I18nKey::RowRevealInExplorer, lang)).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_NAME, to_wstring(tr(I18nKey::RowCopyName, lang)).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PID, to_wstring(tr(I18nKey::RowCopyPid, lang)).as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_PROPERTIES, to_wstring(tr(I18nKey::RowProperties, lang)).as_ptr());
-
-        let mut pt: POINT = std::mem::zeroed();
-        GetCursorPos(&mut pt);
-
-        SetForegroundWindow(hwnd);
-        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
-        let cmd = TrackPopupMenuEx(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
-            pt.x,
-            pt.y + 4,
-            hwnd,
-            std::ptr::null(),
-        );
-        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
-        DestroyMenu(menu);
-
-        {
-            let mut state_guard = STATE.lock().unwrap();
-            if let Some(state) = state_guard.as_mut() {
-                state.hovered_btn = None;
-                state.hovered_row = None;
-            }
-        }
-        InvalidateRect(hwnd, std::ptr::null(), 0);
-
-        match cmd as usize {
+    unsafe fn handle_row_command(hwnd: HWND, cmd: usize, app: &AppTarget, _is_protected: bool) {
+        let lang = STATE.lock().unwrap().as_ref().map(|s| s.active_language).unwrap_or(Language::En);
+        match cmd {
             IDM_ROW_WHITELIST_ADD => {
                 {
                     let mut state_guard = STATE.lock().unwrap();
@@ -1889,137 +2344,49 @@ mod win_gui {
         }
     }
 
-    unsafe fn show_settings_menu(hwnd: HWND) {
-        let (lang, prefs) = {
+    unsafe fn show_tray_context_menu(hwnd: HWND) {
+        refresh_scan_silent();
+        let items = build_fluent_tiered_menu(hwnd);
+        if items.is_empty() {
+            return;
+        }
+
+        let mut pt: POINT = std::mem::zeroed();
+        GetCursorPos(&mut pt);
+
+        SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
+        let cmd = track_fluent_menu(pt.x, pt.y, true, items, hwnd);
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
+
+        if let Some(cmd) = cmd {
+            handle_menu_command(hwnd, cmd);
+        }
+    }
+
+    unsafe fn show_sort_menu(hwnd: HWND) {
+        let (cur_mode, lang) = {
             let state = STATE.lock().unwrap();
             let s = state.as_ref().unwrap();
-            (s.active_language, s.prefs.clone())
+            (s.prefs.sort_mode, s.active_language)
         };
 
-        let menu: HMENU = CreatePopupMenu();
-        let autostart_on = is_autostart_enabled();
-        let autostart_label = format!(
-            "{} {}",
-            tr(I18nKey::MenuLaunchAtLogin, lang),
-            if autostart_on { "[已启用 √]" } else { "[未启用]" }
-        );
-        let autostart_flags = MF_STRING | if autostart_on { MF_CHECKED } else { 0 };
-        AppendMenuW(menu, autostart_flags, IDM_CFG_STARTUP, to_wstring(&autostart_label).as_ptr());
-
-        // 全局快捷键动态管理子菜单
-        let hk_menu: HMENU = CreatePopupMenu();
-        let hk_enabled = prefs.hotkey.enabled;
-        let hk_toggle_title = if hk_enabled {
-            "启用全局快捷键 [已开启 √]"
-        } else {
-            "启用全局快捷键 [已关闭]"
-        };
-        let hk_toggle_flags = MF_STRING | if hk_enabled { MF_CHECKED } else { 0 };
-        AppendMenuW(hk_menu, hk_toggle_flags, IDM_HOTKEY_TOGGLE_ENABLE, to_wstring(hk_toggle_title).as_ptr());
-        AppendMenuW(hk_menu, MF_SEPARATOR, 0, std::ptr::null());
-
-        for (i, p) in PRESETS.iter().enumerate() {
-            let is_matched = hk_enabled && prefs.hotkey.modifiers == p.modifiers && prefs.hotkey.vk == p.vk;
-            let flags = MF_STRING | if is_matched { MF_CHECKED } else { 0 };
-            AppendMenuW(hk_menu, flags, IDM_HOTKEY_PRESET_BASE + i, to_wstring(p.display).as_ptr());
-        }
-
-        AppendMenuW(hk_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(hk_menu, MF_STRING, IDM_HOTKEY_CUSTOM_RECORDER, to_wstring("自定义快捷键录制...").as_ptr());
-
-        let cur_hk_summary = if hk_enabled {
-            prefs.hotkey.display.as_str()
-        } else {
-            "已禁用"
-        };
-        let shortcut_title = format!("{}: {}", tr(I18nKey::MenuGlobalShortcut, lang), cur_hk_summary);
-        AppendMenuW(menu, MF_POPUP, hk_menu as usize, to_wstring(&shortcut_title).as_ptr());
-
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-
-        // 1. CLI 工具子菜单 (mtc)
-        let cli_menu: HMENU = CreatePopupMenu();
-        let installed_path = CliManager::find_installed_cli();
-        let bundled_path = CliManager::get_bundled_cli_path();
-        let cli_installed = installed_path.is_some();
-        let cli_has_any = cli_installed || bundled_path.is_some();
-
-        let cli_status_str = if cli_installed {
-            format!("{}: [全局已就绪]", tr(I18nKey::CliStatusInstalled, lang))
-        } else if bundled_path.is_some() {
-            format!("{}: [开发就绪 (免安装可用)]", tr(I18nKey::CliStatusInstalled, lang))
-        } else {
-            format!("{}: [未安装]", tr(I18nKey::CliStatusNotInstalled, lang))
-        };
-        AppendMenuW(cli_menu, MF_STRING, 0, to_wstring(&cli_status_str).as_ptr());
-        AppendMenuW(cli_menu, MF_SEPARATOR, 0, std::ptr::null());
-
-        if !cli_installed {
-            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_INSTALL_USER, to_wstring(tr(I18nKey::CliMenuInstallUser, lang)).as_ptr());
-        }
-
-        if cli_has_any {
-            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_TEST_TERMINAL, to_wstring(tr(I18nKey::CliMenuTest, lang)).as_ptr());
-            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_REVEAL, to_wstring(tr(I18nKey::CliMenuReveal, lang)).as_ptr());
-        }
-
-        if cli_installed {
-            AppendMenuW(cli_menu, MF_SEPARATOR, 0, std::ptr::null());
-            AppendMenuW(cli_menu, MF_STRING, IDM_CLI_UNINSTALL, to_wstring(tr(I18nKey::CliMenuUninstall, lang)).as_ptr());
-        }
-
-        let cli_title = format!("{}: {}", tr(I18nKey::MenuCliTools, lang), if cli_installed { "已全局就绪" } else if cli_has_any { "开发就绪" } else { "未配置" });
-        AppendMenuW(menu, MF_POPUP, cli_menu as usize, to_wstring(&cli_title).as_ptr());
-
-        // 2. 排序方式子菜单
-        let sort_menu: HMENU = CreatePopupMenu();
-        let add_sort = |m: HMENU, id: usize, title: &str, checked: bool| {
-            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
-            AppendMenuW(m, flags, id, to_wstring(title).as_ptr());
-        };
-        add_sort(sort_menu, IDM_SORT_COMPOSITE, tr(I18nKey::SortComposite, lang), prefs.sort_mode == SortMode::Composite);
-        add_sort(sort_menu, IDM_SORT_MEMORY, tr(I18nKey::SortMemory, lang), prefs.sort_mode == SortMode::Memory);
-        add_sort(sort_menu, IDM_SORT_CPU, tr(I18nKey::SortCpu, lang), prefs.sort_mode == SortMode::Cpu);
-        add_sort(sort_menu, IDM_SORT_WINDOWS, tr(I18nKey::SortWindows, lang), prefs.sort_mode == SortMode::Windows);
-        add_sort(sort_menu, IDM_SORT_DEFAULT, tr(I18nKey::SortDefault, lang), prefs.sort_mode == SortMode::Default);
-        let sort_title = format!("{}: {}", tr(I18nKey::MenuSortBy, lang), prefs.sort_mode.label());
-        AppendMenuW(menu, MF_POPUP, sort_menu as usize, to_wstring(&sort_title).as_ptr());
-
-        // 3. 显示偏好子菜单
-        let display_menu: HMENU = CreatePopupMenu();
-        let add_disp = |m: HMENU, id: usize, title: &str, checked: bool| {
-            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
-            AppendMenuW(m, flags, id, to_wstring(title).as_ptr());
-        };
-        add_disp(display_menu, IDM_CFG_TOGGLE_DETAILED_METRICS, tr(I18nKey::MenuShowDetailedMetrics, lang), prefs.show_detailed_metrics);
-        add_disp(display_menu, IDM_CFG_TOGGLE_APP_ID, tr(I18nKey::MenuShowAppIdentifier, lang), prefs.show_app_identifier);
-        add_disp(display_menu, IDM_CFG_TOGGLE_SORT_BTN, tr(I18nKey::MenuShowSortButton, lang), prefs.show_sort_button);
-        AppendMenuW(menu, MF_POPUP, display_menu as usize, to_wstring("界面显示偏好").as_ptr());
-
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_CFG_OPEN_FILE, to_wstring(tr(I18nKey::MenuOpenConfigFile, lang)).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_CFG_OPEN_DIR, to_wstring(tr(I18nKey::MenuOpenConfigDir, lang)).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_CFG_RELOAD, to_wstring("重新加载白名单规则").as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, IDM_CFG_GITHUB, to_wstring(tr(I18nKey::MenuGithubRepo, lang)).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring(tr(I18nKey::BtnAbout, lang)).as_ptr());
+        let items = vec![
+            FluentMenuItem::radio(IDM_SORT_COMPOSITE, tr(I18nKey::SortComposite, lang), cur_mode == SortMode::Composite),
+            FluentMenuItem::radio(IDM_SORT_MEMORY, tr(I18nKey::SortMemory, lang), cur_mode == SortMode::Memory),
+            FluentMenuItem::radio(IDM_SORT_CPU, tr(I18nKey::SortCpu, lang), cur_mode == SortMode::Cpu),
+            FluentMenuItem::radio(IDM_SORT_WINDOWS, tr(I18nKey::SortWindows, lang), cur_mode == SortMode::Windows),
+            FluentMenuItem::radio(IDM_SORT_DEFAULT, tr(I18nKey::SortDefault, lang), cur_mode == SortMode::Default),
+        ];
 
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let mut pt = POINT { x: scale_dpi(14, dpi), y: scale_dpi(444, dpi) };
+        let mut pt = POINT { x: scale_dpi(260, dpi), y: scale_dpi(38, dpi) };
         ClientToScreen(hwnd, &mut pt);
 
         SetForegroundWindow(hwnd);
         IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
-        let cmd = TrackPopupMenuEx(
-            menu,
-            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            pt.x,
-            pt.y,
-            hwnd,
-            std::ptr::null(),
-        );
+        let cmd = track_fluent_menu(pt.x, pt.y, false, items, hwnd);
         IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
-        DestroyMenu(menu);
 
         {
             let mut state_guard = STATE.lock().unwrap();
@@ -2029,272 +2396,123 @@ mod win_gui {
         }
         InvalidateRect(hwnd, std::ptr::null(), 0);
 
-        match cmd as usize {
-            IDM_CFG_STARTUP => {
-                let now_enabled = toggle_autostart();
-                let status = if now_enabled {
-                    "已开启开机自动启动"
-                } else {
-                    "已关闭开机自动启动"
-                };
-                {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.status_message = Some(status.to_string());
-                        state.status_timestamp = Some(Instant::now());
-                    }
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_HOTKEY_TOGGLE_ENABLE => {
-                let (new_enabled, cfg) = {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.prefs.hotkey.enabled = !state.prefs.hotkey.enabled;
-                        let enabled = state.prefs.hotkey.enabled;
-                        let cfg = state.prefs.hotkey.clone();
-                        state.prefs.save();
-                        (enabled, cfg)
-                    } else {
-                        (false, HotkeyConfig::default())
-                    }
-                };
-                apply_hotkey(hwnd, &cfg);
-                let status = if new_enabled {
-                    format!("一键清理快捷键已开启: {}", cfg.display)
-                } else {
-                    "一键清理快捷键已关闭".to_string()
-                };
-                {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.status_message = Some(status);
-                        state.status_timestamp = Some(Instant::now());
-                    }
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_HOTKEY_CUSTOM_RECORDER => {
-                show_shortcut_recorder_dialog(hwnd);
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            cmd if (IDM_HOTKEY_PRESET_BASE..IDM_HOTKEY_PRESET_BASE + PRESETS.len()).contains(&(cmd as usize)) => {
-                let idx = (cmd as usize) - IDM_HOTKEY_PRESET_BASE;
-                let preset = &PRESETS[idx];
-                let new_cfg = HotkeyConfig {
-                    enabled: true,
-                    modifiers: preset.modifiers,
-                    vk: preset.vk,
-                    display: match preset.name {
-                        "CtrlAltK" => "Ctrl + Alt + K".to_string(),
-                        "CtrlShiftK" => "Ctrl + Shift + K".to_string(),
-                        "AltShiftK" => "Alt + Shift + K".to_string(),
-                        "CtrlAltX" => "Ctrl + Alt + X".to_string(),
-                        "WinAltK" => "Win + Alt + K".to_string(),
-                        "WinShiftK" => "Win + Shift + K".to_string(),
-                        _ => preset.display.to_string(),
-                    },
-                };
-                let ok = apply_hotkey(hwnd, &new_cfg);
-                if ok {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.prefs.hotkey = new_cfg.clone();
-                        state.prefs.save();
-                        state.status_message = Some(format!("一键清理快捷键已设为: {}", new_cfg.display));
-                        state.status_timestamp = Some(Instant::now());
-                    }
-                } else {
-                    let old_cfg = {
-                        let state_guard = STATE.lock().unwrap();
-                        state_guard.as_ref().map(|s| s.prefs.hotkey.clone()).unwrap_or_default()
-                    };
-                    apply_hotkey(hwnd, &old_cfg);
-                    MessageBoxW(
-                        hwnd,
-                        to_wstring(&format!("快捷键「{}」已被系统或其他正在运行的软件占用，请选择其他预设或自定义录制！", new_cfg.display)).as_ptr(),
-                        to_wstring("快捷键冲突").as_ptr(),
-                        MB_OK | MB_ICONWARNING | MB_TOPMOST,
-                    );
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CFG_RELOAD => {
-                let fresh_prefs = GuiPreferences::load();
-                apply_hotkey(hwnd, &fresh_prefs.hotkey);
-                {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.whitelist = WhitelistManager::new();
-                        state.prefs = fresh_prefs;
-                        state.status_message = Some("配置与白名单规则已重新加载".to_string());
-                        state.status_timestamp = Some(Instant::now());
-                    }
-                }
-                refresh_scan();
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CFG_TOGGLE_DETAILED_METRICS => {
-                {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.prefs.show_detailed_metrics = !state.prefs.show_detailed_metrics;
-                        state.prefs.save();
-                        let s = if state.prefs.show_detailed_metrics { "已开启详细指标" } else { "已关闭详细指标" };
-                        state.status_message = Some(s.to_string());
-                        state.status_timestamp = Some(Instant::now());
-                    }
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CFG_TOGGLE_APP_ID => {
-                {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.prefs.show_app_identifier = !state.prefs.show_app_identifier;
-                        state.prefs.save();
-                        let s = if state.prefs.show_app_identifier { "已开启进程标识" } else { "已关闭进程标识" };
-                        state.status_message = Some(s.to_string());
-                        state.status_timestamp = Some(Instant::now());
-                    }
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CFG_TOGGLE_SORT_BTN => {
-                {
-                    let mut state_guard = STATE.lock().unwrap();
-                    if let Some(state) = state_guard.as_mut() {
-                        state.prefs.show_sort_button = !state.prefs.show_sort_button;
-                        state.prefs.save();
-                        let s = if state.prefs.show_sort_button { "已显示排序按钮" } else { "已隐藏排序按钮" };
-                        state.status_message = Some(s.to_string());
-                        state.status_timestamp = Some(Instant::now());
-                    }
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_SORT_COMPOSITE | IDM_SORT_MEMORY | IDM_SORT_CPU | IDM_SORT_WINDOWS | IDM_SORT_DEFAULT => {
-                let new_mode = match cmd as usize {
-                    IDM_SORT_COMPOSITE => SortMode::Composite,
-                    IDM_SORT_MEMORY => SortMode::Memory,
-                    IDM_SORT_CPU => SortMode::Cpu,
-                    IDM_SORT_WINDOWS => SortMode::Windows,
-                    _ => SortMode::Default,
-                };
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.prefs.sort_mode = new_mode;
-                    state.prefs.save();
-                    sort_targets(&mut state.targets, new_mode);
-                    sort_protected(&mut state.protected, new_mode);
-                    state.status_message = Some(format!("{}: {}", tr(I18nKey::MenuSortBy, state.active_language), new_mode.label()));
-                    state.status_timestamp = Some(Instant::now());
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CLI_INSTALL_USER => {
-                let res = CliManager::install();
-                let status = match res {
-                    Ok(p) => format!("CLI 已成功安装至: {}", p.display()),
-                    Err(e) => format!("CLI 安装失败: {}", e),
-                };
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some(status);
-                    state.status_timestamp = Some(Instant::now());
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CLI_TEST_TERMINAL => {
-                CliManager::test_in_terminal();
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some("正在终端中启动 mtc...".to_string());
-                    state.status_timestamp = Some(Instant::now());
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CLI_REVEAL => {
-                CliManager::reveal_in_explorer();
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some("正在文件资源管理器中定位 mtc.exe...".to_string());
-                    state.status_timestamp = Some(Instant::now());
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CLI_UNINSTALL => {
-                let res = CliManager::uninstall();
-                let status = match res {
-                    Ok(_) => "CLI 工具已从用户路径移除".to_string(),
-                    Err(e) => format!("CLI 卸载失败: {}", e),
-                };
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some(status);
-                    state.status_timestamp = Some(Instant::now());
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CFG_OPEN_FILE => {
-                let path = WhitelistManager::get_config_path();
-                if !path.exists() {
-                    let dir = WhitelistManager::get_config_dir();
-                    let _ = std::fs::create_dir_all(&dir);
-                    let _ = std::fs::write(&path, "# Task Cleaner Configuration\n");
-                }
-                let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some("已在记事本中打开配置文件".to_string());
-                    state.status_timestamp = Some(Instant::now());
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CFG_OPEN_DIR => {
-                let dir = WhitelistManager::get_config_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
-                let mut state_guard = STATE.lock().unwrap();
-                if let Some(state) = state_guard.as_mut() {
-                    state.status_message = Some("已在资源管理器中打开配置目录".to_string());
-                    state.status_timestamp = Some(Instant::now());
-                }
-                InvalidateRect(hwnd, std::ptr::null(), 1);
-            }
-            IDM_CFG_GITHUB => {
-                let wverb = to_wstring("open");
-                let wurl = to_wstring("https://github.com/macos-task-cleaner/windows-task-cleaner-gui");
-                ShellExecuteW(0 as HWND, wverb.as_ptr(), wurl.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL as i32);
-            }
-            IDM_CFG_ABOUT => {
-                let cur_shortcut = {
-                    let state_guard = STATE.lock().unwrap();
-                    state_guard
-                        .as_ref()
-                        .map(|s| {
-                            if s.prefs.hotkey.enabled {
-                                s.prefs.hotkey.display.clone()
-                            } else {
-                                "已禁用".to_string()
-                            }
-                        })
-                        .unwrap_or_else(|| "Ctrl + Alt + K".to_string())
-                };
-                let caption = to_wstring("Task Cleaner");
-                let msg = to_wstring(&format!("Task Cleaner for Windows 11\n版本: 1.0.0 (Rust Native Fluent 2.0)\n全局清理快捷键: {} (一键退出全部未保护任务)\n\n轻量优雅的一体化前台任务管理、白名单保护与内存工作集深度释放套件。\n100% 独立原生 Rust 二进制，零外部重型依赖。", cur_shortcut));
-                MessageBoxW(
-                    hwnd,
-                    msg.as_ptr(),
-                    caption.as_ptr(),
-                    MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
-                );
-            }
-            _ => {}
+        if let Some(cmd) = cmd {
+            handle_menu_command(hwnd, cmd);
         }
     }
 
-    /// 弹出 24 语种动态切换菜单 (含跟随系统)
+    unsafe fn show_action_chevron_menu(hwnd: HWND) {
+        let lang = STATE.lock().unwrap().as_ref().map(|s| s.active_language).unwrap_or(Language::En);
+        let items = vec![
+            FluentMenuItem::action(IDM_ACTION_GRACEFUL, tr(I18nKey::ActionCleanGraceful, lang), Some('\u{E74D}')),
+            FluentMenuItem::action(IDM_ACTION_FORCE, tr(I18nKey::ActionCleanForce, lang), Some('\u{E711}')),
+            FluentMenuItem::separator(),
+            FluentMenuItem::action(IDM_ACTION_PURGE, tr(I18nKey::ActionCleanPurge, lang), Some('\u{E894}')),
+        ];
+
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let mut pt = POINT { x: scale_dpi(298, dpi), y: scale_dpi(124, dpi) };
+        ClientToScreen(hwnd, &mut pt);
+
+        SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
+        let cmd = track_fluent_menu(pt.x, pt.y, false, items, hwnd);
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
+
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+            }
+        }
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+
+        if let Some(cmd) = cmd {
+            handle_menu_command(hwnd, cmd);
+        }
+    }
+
+    unsafe fn show_row_more_menu(hwnd: HWND, actual_idx: usize) {
+        let (app_info, lang) = {
+            let state_guard = STATE.lock().unwrap();
+            let state = match state_guard.as_ref() {
+                Some(s) => s,
+                None => return,
+            };
+            (get_item_at(state, actual_idx), state.active_language)
+        };
+
+        let (app, is_protected) = match app_info {
+            Some(v) => v,
+            None => return,
+        };
+
+        let mut items = Vec::new();
+        if is_protected {
+            items.push(FluentMenuItem::action(IDM_ROW_WHITELIST_REMOVE, tr(I18nKey::RowRemoveWhitelist, lang), Some('\u{E711}')));
+            items.push(FluentMenuItem::action(IDM_ROW_PURGE_MEMORY, tr(I18nKey::RowPurgeMemory, lang), Some('\u{E894}')));
+        } else {
+            items.push(FluentMenuItem::action(IDM_ROW_WHITELIST_ADD, tr(I18nKey::RowAddWhitelist, lang), Some('\u{EA18}')));
+            items.push(FluentMenuItem::action(IDM_ROW_FORCE_KILL, tr(I18nKey::RowForceKill, lang), Some('\u{E711}')));
+            items.push(FluentMenuItem::action(IDM_ROW_PURGE_MEMORY, tr(I18nKey::RowPurgeMemory, lang), Some('\u{E894}')));
+        }
+        items.push(FluentMenuItem::separator());
+        items.push(FluentMenuItem::action(IDM_ROW_REVEAL, tr(I18nKey::RowRevealInExplorer, lang), Some('\u{ED25}')));
+        items.push(FluentMenuItem::action(IDM_ROW_COPY_NAME, tr(I18nKey::RowCopyName, lang), Some('\u{E8A5}')));
+        items.push(FluentMenuItem::action(IDM_ROW_COPY_PID, tr(I18nKey::RowCopyPid, lang), Some('\u{E8A5}')));
+        items.push(FluentMenuItem::separator());
+        items.push(FluentMenuItem::action(IDM_ROW_PROPERTIES, tr(I18nKey::RowProperties, lang), Some('\u{E946}')));
+
+        let mut pt: POINT = std::mem::zeroed();
+        GetCursorPos(&mut pt);
+
+        SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
+        let cmd = track_fluent_menu(pt.x, pt.y, false, items, hwnd);
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
+
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+                state.hovered_row = None;
+            }
+        }
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+
+        if let Some(cmd) = cmd {
+            handle_row_command(hwnd, cmd, &app, is_protected);
+        }
+    }
+
+    unsafe fn show_settings_menu(hwnd: HWND) {
+        let items = build_fluent_tiered_menu(hwnd);
+        if items.is_empty() {
+            return;
+        }
+
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let mut pt = POINT { x: scale_dpi(14, dpi), y: scale_dpi(444, dpi) };
+        ClientToScreen(hwnd, &mut pt);
+
+        SetForegroundWindow(hwnd);
+        IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
+        let cmd = track_fluent_menu(pt.x, pt.y, true, items, hwnd);
+        IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
+
+        {
+            let mut state_guard = STATE.lock().unwrap();
+            if let Some(state) = state_guard.as_mut() {
+                state.hovered_btn = None;
+            }
+        }
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+
+        if let Some(cmd) = cmd {
+            handle_menu_command(hwnd, cmd);
+        }
+    }
+
     unsafe fn show_language_menu(hwnd: HWND) {
         let (current_pref, lang) = {
             let state = STATE.lock().unwrap();
@@ -2302,17 +2520,13 @@ mod win_gui {
             (s.prefs.language_pref, s.active_language)
         };
 
-        let menu: HMENU = CreatePopupMenu();
-        let auto_checked = current_pref == LanguagePreference::Auto;
-        let auto_flags = MF_STRING | if auto_checked { MF_CHECKED } else { 0 };
-        AppendMenuW(menu, auto_flags, IDM_LANG_AUTO, to_wstring(tr(I18nKey::LangAuto, lang)).as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        let mut items = Vec::new();
+        items.push(FluentMenuItem::radio(IDM_LANG_AUTO, tr(I18nKey::LangAuto, lang), current_pref == LanguagePreference::Auto));
+        items.push(FluentMenuItem::separator());
 
         for (idx, &l) in Language::ALL.iter().enumerate() {
             let checked = current_pref == LanguagePreference::Specific(l);
-            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
-            let title = l.display_name();
-            AppendMenuW(menu, flags, IDM_LANG_BASE + idx, to_wstring(title).as_ptr());
+            items.push(FluentMenuItem::radio(IDM_LANG_BASE + idx, l.display_name(), checked));
         }
 
         let dpi = GetDpiForWindow(hwnd).max(96);
@@ -2321,16 +2535,8 @@ mod win_gui {
 
         SetForegroundWindow(hwnd);
         IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
-        let cmd = TrackPopupMenuEx(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
-            pt.x,
-            pt.y,
-            hwnd,
-            std::ptr::null(),
-        );
+        let cmd = track_fluent_menu(pt.x, pt.y, true, items, hwnd);
         IS_MENU_ACTIVE.store(false, Ordering::SeqCst);
-        DestroyMenu(menu);
 
         {
             let mut state_guard = STATE.lock().unwrap();
@@ -2340,31 +2546,10 @@ mod win_gui {
         }
         InvalidateRect(hwnd, std::ptr::null(), 0);
 
-        let cmd = cmd as usize;
-        if cmd == IDM_LANG_AUTO {
-            let mut state_guard = STATE.lock().unwrap();
-            if let Some(state) = state_guard.as_mut() {
-                state.prefs.language_pref = LanguagePreference::Auto;
-                state.active_language = detect_system_language();
-                state.prefs.save();
-                state.status_message = Some("语言已设置为跟随系统".to_string());
-                state.status_timestamp = Some(Instant::now());
-            }
-            InvalidateRect(hwnd, std::ptr::null(), 1);
-        } else if cmd >= IDM_LANG_BASE && cmd < (IDM_LANG_BASE + Language::ALL.len()) {
-            let target_lang = Language::ALL[cmd - IDM_LANG_BASE];
-            let mut state_guard = STATE.lock().unwrap();
-            if let Some(state) = state_guard.as_mut() {
-                state.prefs.language_pref = LanguagePreference::Specific(target_lang);
-                state.active_language = target_lang;
-                state.prefs.save();
-                state.status_message = Some(format!("语言已切换为: {}", target_lang.display_name()));
-                state.status_timestamp = Some(Instant::now());
-            }
-            InvalidateRect(hwnd, std::ptr::null(), 1);
+        if let Some(cmd) = cmd {
+            handle_menu_command(hwnd, cmd);
         }
     }
-
     fn execute_clean_all(mode: TerminationMode) {
         let mut state_guard = STATE.lock().unwrap();
         if let Some(state) = state_guard.as_mut() {
@@ -2960,11 +3145,11 @@ mod win_gui {
             WM_TRAYICON => {
                 let event = (lparam & 0xFFFF) as u32;
                 match event {
-                    WM_LBUTTONUP => {
-                        toggle_window(hwnd);
-                    }
-                    WM_RBUTTONUP => {
+                    WM_LBUTTONUP | WM_RBUTTONUP => {
                         show_tray_context_menu(hwnd);
+                    }
+                    0x0203 /* WM_LBUTTONDBLCLK */ => {
+                        toggle_window(hwnd);
                     }
                     _ => {}
                 }
