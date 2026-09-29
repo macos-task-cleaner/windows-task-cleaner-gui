@@ -98,27 +98,57 @@ This document defines the architectural conventions, engineering rules, and hard
 
 ### A. Setup Installer (Inno Setup)
 * **Script**: [`installer.iss`](file:///Users/don/work/git/windows-task-cleaner-gui/installer.iss) at repository root.
+* **Multi-Architecture Setup Support**:
+  - Parameterized via Inno Setup Preprocessor (ISPP): `#define AppArch "x64" | "x86" | "arm64"`.
+  - Compiles dedicated native installers for all 3 architectures: `TaskCleaner-Windows-x64-Setup.exe`, `TaskCleaner-Windows-x86-Setup.exe`, and `TaskCleaner-Windows-arm64-Setup.exe`.
+  - Architecture-specific directives:
+    * `x64`: `ArchitecturesInstallIn64BitMode=x64compatible`, `ArchitecturesAllowed=x64compatible`.
+    * `arm64`: `ArchitecturesInstallIn64BitMode=arm64`, `ArchitecturesAllowed=arm64`.
+    * `x86`: Native 32-bit mode without architecture restrictions.
 * **Privileges**: Must enforce `PrivilegesRequired=lowest` for per-user installation (`%LOCALAPPDATA%\Programs\TaskCleaner`) to eliminate UAC elevation prompts for end users.
-* **Environment PATH**: Automatically injects `{app}` into user `Environment\Path` registry key so `mtc.exe` is available terminal-wide.
-* **Shortcuts & Icons**: Standard Start Menu and Desktop shortcuts using [`app.ico`](file:///Users/don/work/git/windows-task-cleaner-gui/app.ico).
-* **Safe In-Place Upgrades**: Configures `CloseApplications=yes` to gracefully handle running instances during setup or upgrade.
+* **Environment PATH & Global Broadcast**:
+  - Enforces `ChangesEnvironment=yes` in `[Setup]`.
+  - Injects `{app}` into `HKCU\Environment\Path` and automatically broadcasts `WM_SETTINGCHANGE` so `mtc.exe` is available in new terminal windows without user logoff or system reboot.
+* **Single-Instance Mutex Coordination**:
+  - Windows GUI creates named mutex `TaskCleaner_Win32_SingleInstance_Mutex_2026`. If already running, activates and focuses existing window.
+  - Inno Setup configures `AppMutex=TaskCleaner_Win32_SingleInstance_Mutex_2026` and `CloseApplicationsFilter=TaskCleaner.exe,mtc.exe` to seamlessly close running instances during setup or upgrade.
+* **Clean Uninstaller (Pascal Script in `[Code]`)**:
+  - Implements `RemovePath(ExpandConstant('{app}'))` in `CurUninstallStepChanged(usPostUninstall)` to cleanly strip `{app}` from user `Path`.
+  - Prompts user whether to remove `%APPDATA%\TaskCleaner` configuration and whitelist cache on uninstallation.
+  - Fixes Inno Setup 6 deprecations: uses `UninstallDisplayIcon={app}\app.ico` and `UninstallDisplayName={#MyAppName}`.
+* **Version String Strictness**:
+  - Inno Setup `VersionInfoVersion` strictly requires a purely numeric version format (`major.minor.build.revision`).
+  - CI workflow scripts must strip any non-numeric prefixes (`pre-`, `v`) before passing to `ISCC.exe`.
 
 ### B. Portable Distribution (Portable ZIP)
-* **Archive**: Packaged via [`scripts/package_release.ps1`](file:///Users/don/work/git/windows-task-cleaner-gui/scripts/package_release.ps1) as `TaskCleaner-Windows-x64-Portable.zip`.
+* **Archive**: Packaged via [`scripts/package_release.ps1`](file:///Users/don/work/git/windows-task-cleaner-gui/scripts/package_release.ps1) as:
+  - `TaskCleaner-Windows-x64-Portable.zip`
+  - `TaskCleaner-Windows-x86-Portable.zip`
+  - `TaskCleaner-Windows-arm64-Portable.zip`
 * **Contents**: `TaskCleaner.exe`, `mtc.exe`, `app.ico`, `README.md`, `LICENSE`, and `COMMERCIAL.md`.
 
 ### C. Multi-Architecture CI/CD Pipeline (GitHub Actions)
-* **Workflow**: [`.github/workflows/release.yml`](file:///Users/don/work/git/windows-task-cleaner-gui/.github/workflows/release.yml), strictly mirroring the macOS release matrix.
+* **Workflow**: [`.github/workflows/release.yml`](file:///Users/don/work/git/windows-task-cleaner-gui/.github/workflows/release.yml).
 * **Supported Targets**:
   - `x86_64-pc-windows-msvc` (Standard Intel/AMD 64-bit).
   - `i686-pc-windows-msvc` (Legacy Intel/AMD 32-bit x86).
   - `aarch64-pc-windows-msvc` (Windows on ARM, Surface Pro, Snapdragon X Elite).
-* **Triggers**: Weekly Sunday UTC 02:00 cron (`pre-*`), manual `workflow_dispatch` (version override, release toggle), and `v*` tag pushes.
-* **Integrity**: Generates `.sha256` checksums for every `.exe` and `.zip` asset attached to Releases.
+* **Pre-release by Default for Verification Runs**:
+  - Manual triggers (`workflow_dispatch`) default to Pre-release (`prerelease: true`) with `publish_release: true` and pre tags (e.g. `pre-v...`).
+  - Never push formal releases (`prerelease: false`) during intermediate verification runs.
+* **Copywriting Discipline**:
+  - Strictly neutral engineering terminology. Never output promotional or AI-flavored phrases (e.g. "(主流推荐)", "绿色解压即用版").
+  - Table matrix columns: `架构 / Architecture`, `适用环境 / Environment`, `安装程序 / Setup Installer`, `便携包 / Portable ZIP`.
+* **Integrity**: Generates `.sha256` checksums for every `.exe` and `.zip` asset.
 
 ### D. High-DPI Application Icon (PE Resource Embedding)
 * **Container**: 7-layer hybrid container [`assets/app.ico`](file:///Users/don/work/git/windows-task-cleaner-gui/assets/app.ico) (256x256 PNG + 128..16 32-bit BGRA DIBs).
 * **PE Embedding**: Uses `winres` in [`crates/task-cleaner-gui/build.rs`](file:///Users/don/work/git/windows-task-cleaner-gui/crates/task-cleaner-gui/build.rs) to embed `app.ico` into `TaskCleaner.exe` resource section on Windows.
+* **Window Class Binding**: In `crates/task-cleaner-gui/src/main.rs`, binds embedded icon via `LoadIconW(h_instance, 1 as *const u16)` to `wc.hIcon` and `wc.hIconSm`.
+
+### E. 32-bit Packed Struct Compatibility (`NOTIFYICONDATAW`)
+* **Rule**: On 32-bit MSVC targets (`i686`), `NOTIFYICONDATAW` is a packed struct (alignment 1 or 2 bytes). Taking a slice reference `&nid.szTip[..len]` creates an unaligned reference, triggering `error[E0793]: reference to field of packed struct is unaligned`.
+* **Solution**: Always copy tooltip characters via direct indexed value assignment (`nid.szTip[i] = tip[i]`), never borrow slices from packed structs.
 
 ---
 

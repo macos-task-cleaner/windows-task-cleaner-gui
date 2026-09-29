@@ -74,8 +74,11 @@ jobs:
             $isPre = "false"
           }
 
-          $verNum = $tagName.TrimStart('v').TrimStart('pre-')
-          if ([string]::IsNullOrWhiteSpace($verNum)) { $verNum = "1.0.0" }
+          if ($tagName -match '(\d+(\.\d+)+)') {
+            $verNum = $Matches[1]
+          } else {
+            $verNum = "1.0.0"
+          }
 
           "tag=$tagName" >> $env:GITHUB_OUTPUT
           "title=$title" >> $env:GITHUB_OUTPUT
