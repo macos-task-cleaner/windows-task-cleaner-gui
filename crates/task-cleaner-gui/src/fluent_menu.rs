@@ -11,10 +11,10 @@ use windows_sys::Win32::Graphics::Dwm::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
-    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, ReleaseDC, RoundRect,
+    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, InvalidateRect, ReleaseDC, RoundRect,
     SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, DT_CALCRECT, DT_CENTER, DT_LEFT,
-    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBITMAP, HBRUSH,
-    HDC, HFONT, HPEN, PAINTSTRUCT, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
+    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HFONT, PAINTSTRUCT, PS_NULL,
+    PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
@@ -24,14 +24,15 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-    GetMessageW, InvalidateRect, IsWindow, LoadCursorW, RegisterClassExW, SetForegroundWindow,
+    GetMessageW, IsWindow, LoadCursorW, RegisterClassExW, SetForegroundWindow,
     SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, CS_DROPSHADOW, IDC_ARROW,
     MSG, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
     SW_SHOW, SW_SHOWNOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_NCLBUTTONDOWN, WM_NCRBUTTONDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCLBUTTONDOWN, WM_NCRBUTTONDOWN,
     WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
+const WM_MOUSELEAVE: u32 = 0x02A3;
 const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
 
 #[inline]
@@ -189,6 +190,8 @@ struct MenuLevelState {
     height: i32,
     parent_item_idx: Option<usize>,
 }
+
+unsafe impl Send for MenuLevelState {}
 
 static MENU_STACK: Mutex<Vec<MenuLevelState>> = Mutex::new(Vec::new());
 static SELECTED_COMMAND: Mutex<Option<usize>> = Mutex::new(None);
@@ -894,7 +897,7 @@ pub unsafe fn track_fluent_menu(
     parent_hwnd: HWND,
 ) -> Option<usize> {
     let h_instance = GetModuleHandleW(std::ptr::null());
-    let dpi = GetDpiForWindow(parent_hwnd).max(96);
+    let dpi = GetDpiForWindow(parent_hwnd).max(96) as i32;
     let dark_mode = is_dark_theme();
 
     close_all_fluent_menus();
