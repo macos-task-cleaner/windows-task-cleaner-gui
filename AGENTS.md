@@ -111,6 +111,7 @@ This document defines the architectural conventions, engineering rules, and hard
 * **Workflow**: [`.github/workflows/release.yml`](file:///Users/don/work/git/windows-task-cleaner-gui/.github/workflows/release.yml), strictly mirroring the macOS release matrix.
 * **Supported Targets**:
   - `x86_64-pc-windows-msvc` (Standard Intel/AMD 64-bit).
+  - `i686-pc-windows-msvc` (Legacy Intel/AMD 32-bit x86).
   - `aarch64-pc-windows-msvc` (Windows on ARM, Surface Pro, Snapdragon X Elite).
 * **Triggers**: Weekly Sunday UTC 02:00 cron (`pre-*`), manual `workflow_dispatch` (version override, release toggle), and `v*` tag pushes.
 * **Integrity**: Generates `.sha256` checksums for every `.exe` and `.zip` asset attached to Releases.

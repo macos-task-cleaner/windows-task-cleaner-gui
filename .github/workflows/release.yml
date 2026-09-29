@@ -39,7 +39,7 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc, i686-pc-windows-msvc
 
       - name: Install Inno Setup Packaging Utility
         run: |
@@ -86,7 +86,7 @@ jobs:
       - name: Build and Package All Architectures
         shell: pwsh
         run: |
-          .\scripts\package_release.ps1 -Version "${{ steps.meta.outputs.version_num }}" -BuildArm64
+          .\scripts\package_release.ps1 -Version "${{ steps.meta.outputs.version_num }}" -BuildArm64 -BuildX86
 
       - name: Create and Push Git Tag
         if: github.event_name != 'push'
@@ -125,8 +125,9 @@ jobs:
 
             | 架构与分发形态 / Distribution | 适用环境 / Environment | 安装包/便携包直链下载 / Direct Download |
             | :--- | :--- | :--- |
-            | **Windows x64 安装包** (`Setup.exe`) | Intel / AMD 64位 Windows 10 & 11 | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) |
-            | **Windows x64 便携版** (`Portable.zip`) | 解压即用 / 免安装绿色版 | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
+            | **Windows x64 安装包** (`Setup.exe`) | Intel / AMD 64位 Windows 10 & 11 (主流推荐) | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) |
+            | **Windows x64 便携版** (`Portable.zip`) | Intel / AMD 64位绿色解压即用版 | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
+            | **Windows x86 便携版** (`Portable.zip`) | Intel / AMD 32位老设备兼容绿色版 | [TaskCleaner-Windows-x86-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Portable.zip) |
             | **Windows ARM64 便携版** (`ARM64.zip`) | 骁龙 X Elite / Surface Pro ARM 版 | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
 
             ### 校验和验证 / SHA-256 Checksum Verification

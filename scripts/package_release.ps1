@@ -3,7 +3,8 @@
 param(
     [string]$Version = "1.0.0",
     [switch]$SkipBuild,
-    [switch]$BuildArm64
+    [switch]$BuildArm64,
+    [switch]$BuildX86
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -19,26 +20,42 @@ Write-Host "========================================================" -Foregroun
 $distDir = Join-Path $projectRoot "dist"
 $publishDir = Join-Path $projectRoot "publish"
 $publishX64 = Join-Path $publishDir "x64"
+$publishX86 = Join-Path $publishDir "x86"
 $publishArm64 = Join-Path $publishDir "arm64"
 
 if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir -Force | Out-Null }
 if (-not (Test-Path $publishX64)) { New-Item -ItemType Directory -Path $publishX64 -Force | Out-Null }
+if ($BuildX86 -and -not (Test-Path $publishX86)) { New-Item -ItemType Directory -Path $publishX86 -Force | Out-Null }
 if ($BuildArm64 -and -not (Test-Path $publishArm64)) { New-Item -ItemType Directory -Path $publishArm64 -Force | Out-Null }
 
 # 1. 编译步骤
 if (-not $SkipBuild) {
-    Write-Host "[1/4] Compiling Windows x86_64 Release Suite..." -ForegroundColor Yellow
+    # 1.1 x86_64 (64位 AMD/Intel 标准版，Windows 10/11 主流)
+    Write-Host "[1/4] Compiling Windows x86_64 (x64) Release Suite..." -ForegroundColor Yellow
     cargo build --release --workspace --target x86_64-pc-windows-msvc
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] x86_64 build failed." -ForegroundColor Red
         exit $LASTEXITCODE
     }
-
     Copy-Item "target\x86_64-pc-windows-msvc\release\TaskCleaner.exe" $publishX64 -Force
     Copy-Item "target\x86_64-pc-windows-msvc\release\mtc.exe" $publishX64 -Force
 
+    # 1.2 i686 (32位 x86 传统兼容版)
+    if ($BuildX86) {
+        Write-Host "[1.1/4] Compiling Windows i686 (32-bit x86) Release Suite..." -ForegroundColor Yellow
+        cargo build --release --workspace --target i686-pc-windows-msvc
+        if ($LASTEXITCODE -eq 0) {
+            Copy-Item "target\i686-pc-windows-msvc\release\TaskCleaner.exe" $publishX86 -Force
+            Copy-Item "target\i686-pc-windows-msvc\release\mtc.exe" $publishX86 -Force
+            Write-Host "  * 32-bit x86 binaries compiled successfully." -ForegroundColor Green
+        } else {
+            Write-Host "  [WARN] 32-bit x86 target compilation skipped or failed." -ForegroundColor Yellow
+        }
+    }
+
+    # 1.3 aarch64 (ARM64 骁龙 X Elite / Surface Pro 版)
     if ($BuildArm64) {
-        Write-Host "[1.1/4] Compiling Windows aarch64 (ARM64) Release Suite..." -ForegroundColor Yellow
+        Write-Host "[1.2/4] Compiling Windows aarch64 (ARM64) Release Suite..." -ForegroundColor Yellow
         cargo build --release --workspace --target aarch64-pc-windows-msvc
         if ($LASTEXITCODE -eq 0) {
             Copy-Item "target\aarch64-pc-windows-msvc\release\TaskCleaner.exe" $publishArm64 -Force
@@ -77,6 +94,10 @@ function Create-PortableZip($srcDir, $archName, $zipBaseName) {
 Create-PortableZip $publishX64 "x64" "TaskCleaner-Windows-x64-Portable"
 Create-PortableZip $publishX64 "x64" "TaskCleaner-Windows-x64"
 
+if ($BuildX86 -and (Test-Path (Join-Path $publishX86 "TaskCleaner.exe"))) {
+    Create-PortableZip $publishX86 "x86" "TaskCleaner-Windows-x86-Portable"
+}
+
 if ($BuildArm64 -and (Test-Path (Join-Path $publishArm64 "TaskCleaner.exe"))) {
     Create-PortableZip $publishArm64 "arm64" "TaskCleaner-Windows-arm64-Portable"
 }
@@ -92,11 +113,11 @@ if (-not (Test-Path $isccPath)) {
 
 if (Test-Path $isccPath) {
     & $isccPath "/DMyAppVersion=$Version" "installer.iss"
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  * Setup Exe created: $distDir\TaskCleaner-Windows-x64-Setup.exe" -ForegroundColor Green
-    } else {
-        Write-Host "  [ERROR] Inno Setup compilation failed." -ForegroundColor Red
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [ERROR] Inno Setup compilation failed with exit code $LASTEXITCODE." -ForegroundColor Red
+        exit $LASTEXITCODE
     }
+    Write-Host "  * Setup Exe created: $distDir\TaskCleaner-Windows-x64-Setup.exe" -ForegroundColor Green
 } else {
     Write-Host "  [WARN] Inno Setup compiler (ISCC.exe) not found." -ForegroundColor Yellow
     Write-Host "  To build Setup.exe locally: winget install JRSoftware.InnoSetup" -ForegroundColor Yellow
