@@ -11,9 +11,9 @@ on:
         required: false
         default: ''
       publish_release:
-        description: '是否发布到 GitHub Release (默认不发布；若勾选则建 Release)'
+        description: '是否发布到 GitHub Release (默认发布预发布版本；若取消勾选则仅构建不发布)'
         type: boolean
-        default: false
+        default: true
       prerelease:
         description: '是否标记为预发布 (Pre-release)'
         type: boolean
