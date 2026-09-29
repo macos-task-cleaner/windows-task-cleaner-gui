@@ -69,7 +69,7 @@ mod win_gui {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, FindWindowW, GetClientRect,
-        GetCursorPos, GetMessageW, GetSystemMetrics, IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
+        GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowRect, IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
         PostQuitMessage, PrivateExtractIconsW, RegisterClassExW, SetForegroundWindow, SetTimer,
         SetWindowPos, ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage,
         CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST, ICONINFO, IDC_ARROW,
@@ -2004,15 +2004,19 @@ mod win_gui {
         AppendMenuW(menu, MF_STRING, IDM_CFG_GITHUB, to_wstring(tr(I18nKey::MenuGithubRepo, lang)).as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_CFG_ABOUT, to_wstring(tr(I18nKey::BtnAbout, lang)).as_ptr());
 
+        let mut win_rect: RECT = std::mem::zeroed();
+        GetWindowRect(hwnd, &mut win_rect);
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let mut pt = POINT { x: scale_dpi(14, dpi), y: scale_dpi(444, dpi) };
-        ClientToScreen(hwnd, &mut pt);
+        let pt = POINT {
+            x: win_rect.left - scale_dpi(6, dpi),
+            y: win_rect.bottom - scale_dpi(8, dpi),
+        };
 
         SetForegroundWindow(hwnd);
         IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
         let cmd = TrackPopupMenuEx(
             menu,
-            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+            TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
             pt.x,
             pt.y,
             hwnd,
@@ -2315,9 +2319,13 @@ mod win_gui {
             AppendMenuW(menu, flags, IDM_LANG_BASE + idx, to_wstring(title).as_ptr());
         }
 
+        let mut win_rect: RECT = std::mem::zeroed();
+        GetWindowRect(hwnd, &mut win_rect);
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let mut pt = POINT { x: scale_dpi(222, dpi), y: scale_dpi(444, dpi) };
-        ClientToScreen(hwnd, &mut pt);
+        let pt = POINT {
+            x: win_rect.left - scale_dpi(6, dpi),
+            y: win_rect.bottom - scale_dpi(8, dpi),
+        };
 
         SetForegroundWindow(hwnd);
         IS_MENU_ACTIVE.store(true, Ordering::SeqCst);
