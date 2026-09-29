@@ -17,6 +17,11 @@ This document defines the architectural conventions, engineering rules, and hard
 3. **Clickable File Links**:
    * All file paths and symbol references in explanations must use the `file://` scheme (e.g. `file:///Users/don/work/git/windows-task-cleaner-gui/crates/task-cleaner-gui/src/main.rs`).
 
+4. **Proactive Git Push upon Milestone Delivery**:
+   * While intermediate micro-debugging loops avoid redundant commit noise, the agent MUST proactively stage, commit, and execute `git push origin main` upon completing any user-requested feature, asset deliverable, bug fix, or CI/CD workflow milestone.
+   * Never leave completed deliverables uncommitted or unpushed in the workspace waiting for the user to prompt.
+   * Commit messages must strictly adhere to the No-Emoji policy and follow Conventional Commits (e.g., `feat(ci): ...`, `fix(gui): ...`).
+
 ---
 
 ## 2. Architecture Overview
@@ -89,7 +94,34 @@ This document defines the architectural conventions, engineering rules, and hard
 
 ---
 
-## 5. Internationalization (I18n) Decoupling & Manual Trigger (STRICT)
+## 5. Packaging & Distribution Engineering Standards
+
+### A. Setup Installer (Inno Setup)
+* **Script**: [`installer.iss`](file:///Users/don/work/git/windows-task-cleaner-gui/installer.iss) at repository root.
+* **Privileges**: Must enforce `PrivilegesRequired=lowest` for per-user installation (`%LOCALAPPDATA%\Programs\TaskCleaner`) to eliminate UAC elevation prompts for end users.
+* **Environment PATH**: Automatically injects `{app}` into user `Environment\Path` registry key so `mtc.exe` is available terminal-wide.
+* **Shortcuts & Icons**: Standard Start Menu and Desktop shortcuts using [`app.ico`](file:///Users/don/work/git/windows-task-cleaner-gui/app.ico).
+* **Safe In-Place Upgrades**: Configures `CloseApplications=yes` to gracefully handle running instances during setup or upgrade.
+
+### B. Portable Distribution (Portable ZIP)
+* **Archive**: Packaged via [`scripts/package_release.ps1`](file:///Users/don/work/git/windows-task-cleaner-gui/scripts/package_release.ps1) as `TaskCleaner-Windows-x64-Portable.zip`.
+* **Contents**: `TaskCleaner.exe`, `mtc.exe`, `app.ico`, `README.md`, `LICENSE`, and `COMMERCIAL.md`.
+
+### C. Multi-Architecture CI/CD Pipeline (GitHub Actions)
+* **Workflow**: [`.github/workflows/release.yml`](file:///Users/don/work/git/windows-task-cleaner-gui/.github/workflows/release.yml), strictly mirroring the macOS release matrix.
+* **Supported Targets**:
+  - `x86_64-pc-windows-msvc` (Standard Intel/AMD 64-bit).
+  - `aarch64-pc-windows-msvc` (Windows on ARM, Surface Pro, Snapdragon X Elite).
+* **Triggers**: Weekly Sunday UTC 02:00 cron (`pre-*`), manual `workflow_dispatch` (version override, release toggle), and `v*` tag pushes.
+* **Integrity**: Generates `.sha256` checksums for every `.exe` and `.zip` asset attached to Releases.
+
+### D. High-DPI Application Icon (PE Resource Embedding)
+* **Container**: 7-layer hybrid container [`assets/app.ico`](file:///Users/don/work/git/windows-task-cleaner-gui/assets/app.ico) (256x256 PNG + 128..16 32-bit BGRA DIBs).
+* **PE Embedding**: Uses `winres` in [`crates/task-cleaner-gui/build.rs`](file:///Users/don/work/git/windows-task-cleaner-gui/crates/task-cleaner-gui/build.rs) to embed `app.ico` into `TaskCleaner.exe` resource section on Windows.
+
+---
+
+## 6. Internationalization (I18n) Decoupling & Manual Trigger (STRICT)
 
 * **Decoupling Principle**: Full multi-lingual dictionary synchronization (`crates/task-cleaner-core/src/i18n.rs`) is strictly decoupled from daily feature development and UI prototyping.
 * **Prohibited**:
@@ -102,7 +134,7 @@ This document defines the architectural conventions, engineering rules, and hard
 
 ---
 
-## 6. Single-File Atomic Batch Editing
+## 7. Single-File Atomic Batch Editing
 
 * **Strict Anti-Fragmentation Rule**:
   * Never perform fragmented micro-edits ("view 20 lines -> replace 3 lines -> view 20 lines -> replace 3 lines").
@@ -110,7 +142,7 @@ This document defines the architectural conventions, engineering rules, and hard
 
 ---
 
-## 7. Licensing & Attribution
+## 8. Licensing & Attribution
 
 * **Dual-Licensing Model**:
   * Open-source under **GNU AGPLv3**. Any network service or derivative software must remain AGPLv3.
