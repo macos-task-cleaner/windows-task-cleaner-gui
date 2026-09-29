@@ -126,11 +126,11 @@ jobs:
 
             支持独立安装程序与便携免安装包。安装程序自动完成应用注册与用户 PATH 环境变量配置。
 
-            | 架构 / Architecture | 适用环境 / Environment | 安装程序 / Setup Installer | 便携包 / Portable ZIP |
-            | :--- | :--- | :--- | :--- |
-            | **Windows x64** | 64位 Windows 10 & 11 (x86_64) | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
-            | **Windows x86** | 32位 Windows (i686) | [TaskCleaner-Windows-x86-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Setup.exe) | [TaskCleaner-Windows-x86-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Portable.zip) |
-            | **Windows ARM64** | 64位 Windows on ARM (aarch64) | [TaskCleaner-Windows-arm64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Setup.exe) | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
+            | 架构 / Architecture | 安装程序 / Setup Installer | 便携包 / Portable ZIP |
+            | :--- | :--- | :--- |
+            | **Windows x64** | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
+            | **Windows x86** | [TaskCleaner-Windows-x86-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Setup.exe) | [TaskCleaner-Windows-x86-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Portable.zip) |
+            | **Windows ARM64** | [TaskCleaner-Windows-arm64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Setup.exe) | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
 
             ### 校验和验证 / SHA-256 Checksum Verification
             在 PowerShell 中执行以下命令核对安装包哈希值：

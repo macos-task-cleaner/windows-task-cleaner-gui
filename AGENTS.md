@@ -138,7 +138,7 @@ This document defines the architectural conventions, engineering rules, and hard
   - Never push formal releases (`prerelease: false`) during intermediate verification runs.
 * **Copywriting Discipline**:
   - Strictly neutral engineering terminology. Never output promotional or AI-flavored phrases (e.g. "(主流推荐)", "绿色解压即用版").
-  - Table matrix columns: `架构 / Architecture`, `适用环境 / Environment`, `安装程序 / Setup Installer`, `便携包 / Portable ZIP`.
+  - Table matrix columns: `架构 / Architecture`, `安装程序 / Setup Installer`, `便携包 / Portable ZIP`.
 * **Integrity**: Generates `.sha256` checksums for every `.exe` and `.zip` asset.
 
 ### D. High-DPI Application Icon (PE Resource Embedding)
