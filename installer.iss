@@ -43,8 +43,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startupicon"; Description: "开机自动启动 Task Cleaner (推荐)"; GroupDescription: "系统集成"; Flags: checked
-Name: "addtopath"; Description: "将 mtc 命令行工具添加至用户 PATH 环境变量"; GroupDescription: "命令行集成"; Flags: checked
+Name: "startupicon"; Description: "开机自动启动 Task Cleaner (推荐)"; GroupDescription: "系统集成"
+Name: "addtopath"; Description: "将 mtc 命令行工具添加至用户 PATH 环境变量"; GroupDescription: "命令行集成"
 
 [Files]
 Source: "publish\x64\TaskCleaner.exe"; DestDir: "{app}"; Flags: ignoreversion
