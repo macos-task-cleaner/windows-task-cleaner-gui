@@ -1,0 +1,143 @@
+name: Build and Release
+
+on:
+  schedule:
+    # 每周日 UTC 02:00 (北京时间 10:00) 定时编译 pre 版本并推送 tag (不发布 Release)
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布版本标签 (如 v1.0.1 或 pre-v1.0.1，留空则自动按日期生成)'
+        required: false
+        default: ''
+      publish_release:
+        description: '是否发布到 GitHub Release (默认发布；若取消勾选则仅打 tag 不建 Release)'
+        type: boolean
+        default: true
+      prerelease:
+        description: '是否标记为预发布 (Pre-release)'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Package Windows Task Cleaner Suite
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+
+      - name: Install Inno Setup Packaging Utility
+        run: |
+          choco install innosetup -y
+          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Compute Release Metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $eventName = "${{ github.event_name }}"
+          if ($eventName -eq "schedule") {
+            $tagName = "pre-" + (Get-Date -Format "yyyy.MM.dd")
+            $title = "Task Cleaner Windows $tagName"
+            $publish = "false"
+            $isPre = "true"
+          } elseif ($eventName -eq "workflow_dispatch") {
+            $inputTag = "${{ github.event.inputs.tag }}"
+            if ([string]::IsNullOrWhiteSpace($inputTag)) {
+              $tagName = "v" + (Get-Date -Format "yyyy.MM.dd")
+            } else {
+              $tagName = $inputTag
+            }
+            $title = "Task Cleaner Windows $tagName"
+            $publish = "${{ github.event.inputs.publish_release }}"
+            $isPre = "${{ github.event.inputs.prerelease }}"
+          } else {
+            # tag push (v*)
+            $tagName = "${{ github.ref_name }}"
+            $title = "Task Cleaner Windows $tagName"
+            $publish = "true"
+            $isPre = "false"
+          }
+
+          $verNum = $tagName.TrimStart('v').TrimStart('pre-')
+          if ([string]::IsNullOrWhiteSpace($verNum)) { $verNum = "1.0.0" }
+
+          "tag=$tagName" >> $env:GITHUB_OUTPUT
+          "title=$title" >> $env:GITHUB_OUTPUT
+          "publish_release=$publish" >> $env:GITHUB_OUTPUT
+          "prerelease=$isPre" >> $env:GITHUB_OUTPUT
+          "version_num=$verNum" >> $env:GITHUB_OUTPUT
+
+      - name: Build and Package All Architectures
+        shell: pwsh
+        run: |
+          .\scripts\package_release.ps1 -Version "${{ steps.meta.outputs.version_num }}" -BuildArm64
+
+      - name: Create and Push Git Tag
+        if: github.event_name != 'push'
+        shell: pwsh
+        run: |
+          $tagName = "${{ steps.meta.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f -a "$tagName" -m "Auto tag: $tagName"
+          git push origin "$tagName" --force
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskcleaner-windows-${{ steps.meta.outputs.tag }}
+          path: |
+            dist/*.exe
+            dist/*.exe.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.publish_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.title }}
+          draft: false
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          body: |
+            ### 架构与下载说明 / Architecture & Downloads
+
+            双击运行安装包即可一键完成安装并自动配置环境变量；亦可下载便携版解压即用。
+
+            | 架构与分发形态 / Distribution | 适用环境 / Environment | 安装包/便携包直链下载 / Direct Download |
+            | :--- | :--- | :--- |
+            | **Windows x64 安装包** (`Setup.exe`) | Intel / AMD 64位 Windows 10 & 11 | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) |
+            | **Windows x64 便携版** (`Portable.zip`) | 解压即用 / 免安装绿色版 | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
+            | **Windows ARM64 便携版** (`ARM64.zip`) | 骁龙 X Elite / Surface Pro ARM 版 | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
+
+            ### 校验和验证 / SHA-256 Checksum Verification
+            在 PowerShell 中执行以下命令核对安装包哈希值：
+            ```powershell
+            Get-FileHash -Algorithm SHA256 .\TaskCleaner-Windows-x64-Setup.exe
+            ```
+          files: |
+            dist/*.exe
+            dist/*.exe.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
