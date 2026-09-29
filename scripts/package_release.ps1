@@ -40,30 +40,30 @@ if (-not $SkipBuild) {
     Copy-Item "target\x86_64-pc-windows-msvc\release\TaskCleaner.exe" $publishX64 -Force
     Copy-Item "target\x86_64-pc-windows-msvc\release\mtc.exe" $publishX64 -Force
 
-    # 1.2 i686 (32位 x86 传统兼容版)
+    # 1.2 i686 (32位 x86 兼容版)
     if ($BuildX86) {
         Write-Host "[1.1/4] Compiling Windows i686 (32-bit x86) Release Suite..." -ForegroundColor Yellow
         cargo build --release --workspace --target i686-pc-windows-msvc
-        if ($LASTEXITCODE -eq 0) {
-            Copy-Item "target\i686-pc-windows-msvc\release\TaskCleaner.exe" $publishX86 -Force
-            Copy-Item "target\i686-pc-windows-msvc\release\mtc.exe" $publishX86 -Force
-            Write-Host "  * 32-bit x86 binaries compiled successfully." -ForegroundColor Green
-        } else {
-            Write-Host "  [WARN] 32-bit x86 target compilation skipped or failed." -ForegroundColor Yellow
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [ERROR] 32-bit x86 target compilation failed with exit code $LASTEXITCODE." -ForegroundColor Red
+            exit $LASTEXITCODE
         }
+        Copy-Item "target\i686-pc-windows-msvc\release\TaskCleaner.exe" $publishX86 -Force
+        Copy-Item "target\i686-pc-windows-msvc\release\mtc.exe" $publishX86 -Force
+        Write-Host "  * 32-bit x86 binaries compiled successfully." -ForegroundColor Green
     }
 
-    # 1.3 aarch64 (ARM64 骁龙 X Elite / Surface Pro 版)
+    # 1.3 aarch64 (ARM64 架构版)
     if ($BuildArm64) {
         Write-Host "[1.2/4] Compiling Windows aarch64 (ARM64) Release Suite..." -ForegroundColor Yellow
         cargo build --release --workspace --target aarch64-pc-windows-msvc
-        if ($LASTEXITCODE -eq 0) {
-            Copy-Item "target\aarch64-pc-windows-msvc\release\TaskCleaner.exe" $publishArm64 -Force
-            Copy-Item "target\aarch64-pc-windows-msvc\release\mtc.exe" $publishArm64 -Force
-            Write-Host "  * ARM64 binaries compiled successfully." -ForegroundColor Green
-        } else {
-            Write-Host "  [WARN] ARM64 target compilation skipped or toolchain missing." -ForegroundColor Yellow
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [ERROR] ARM64 target compilation failed with exit code $LASTEXITCODE." -ForegroundColor Red
+            exit $LASTEXITCODE
         }
+        Copy-Item "target\aarch64-pc-windows-msvc\release\TaskCleaner.exe" $publishArm64 -Force
+        Copy-Item "target\aarch64-pc-windows-msvc\release\mtc.exe" $publishArm64 -Force
+        Write-Host "  * ARM64 binaries compiled successfully." -ForegroundColor Green
     }
 }
 

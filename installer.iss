@@ -23,19 +23,29 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName={localappdata}\Programs\TaskCleaner
 DisableProgramGroupPage=yes
 
-; 采用当前用户权限安装，无需 UAC 弹窗提权
+; 采用当前用户权限安装，无需 UAC 提权
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
 OutputDir=dist
 OutputBaseFilename=TaskCleaner-Windows-x64-Setup
 SetupIconFile=app.ico
-UninstallIconFile=app.ico
+UninstallDisplayIcon={app}\app.ico
+UninstallDisplayName={#MyAppName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
+CloseApplicationsFilter=TaskCleaner.exe,mtc.exe
+AppMutex=TaskCleaner_Win32_SingleInstance_Mutex_2026
+ChangesEnvironment=yes
+
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoCopyright=Copyright (c) 2026 DonJone
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "assets\languages\ChineseSimplified.isl"
@@ -43,8 +53,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startupicon"; Description: "开机自动启动 Task Cleaner (推荐)"; GroupDescription: "系统集成"
-Name: "addtopath"; Description: "将 mtc 命令行工具添加至用户 PATH 环境变量"; GroupDescription: "命令行集成"
+Name: "startupicon"; Description: "开机自动启动 Task Cleaner"; GroupDescription: "系统集成"
+Name: "addtopath"; Description: "将 mtc 命令行工具添加至用户 PATH 环境变量"; GroupDescription: "环境配置"
 
 [Files]
 Source: "publish\x64\TaskCleaner.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -60,7 +70,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"; Tasks: startupicon
 
 [Registry]
-; 注册 PATH 环境变量支持
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Run]
@@ -70,7 +79,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 Type: files; Name: "{app}\app.ico"
 
 [Code]
-// 检测 PATH 是否已包含该目录，避免重复追加
 function NeedsAddPath(Param: string): boolean;
 var
   OrigPath: string;
@@ -81,4 +89,45 @@ begin
     exit;
   end;
   Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+end;
+
+procedure RemovePath(Param: string);
+var
+  OrigPath, NewPath: string;
+  P: Integer;
+begin
+  if RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OrigPath) then
+  begin
+    NewPath := OrigPath;
+    P := Pos(Param + ';', NewPath);
+    if P > 0 then
+      Delete(NewPath, P, Length(Param) + 1)
+    else
+    begin
+      P := Pos(';' + Param, NewPath);
+      if P > 0 then
+        Delete(NewPath, P, Length(Param) + 1)
+      else if CompareText(NewPath, Param) = 0 then
+        NewPath := '';
+    end;
+    RegWriteStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath);
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppDataDir: string;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    RemovePath(ExpandConstant('{app}'));
+    AppDataDir := ExpandConstant('{userappdata}\TaskCleaner');
+    if DirExists(AppDataDir) then
+    begin
+      if MsgBox('是否同时删除保存于 AppData 的用户配置文件和白名单缓存？', mbConfirmation, MB_YESNO) = idYes then
+      begin
+        DelTree(AppDataDir, True, True, True);
+      end;
+    end;
+  end;
 end;

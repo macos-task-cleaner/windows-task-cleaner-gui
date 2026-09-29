@@ -121,14 +121,14 @@ jobs:
           body: |
             ### 架构与下载说明 / Architecture & Downloads
 
-            双击运行安装包即可一键完成安装并自动配置环境变量；亦可下载便携版解压即用。
+            支持独立安装程序与便携免安装包。安装程序自动完成应用注册与用户 PATH 环境变量配置。
 
             | 架构与分发形态 / Distribution | 适用环境 / Environment | 安装包/便携包直链下载 / Direct Download |
             | :--- | :--- | :--- |
-            | **Windows x64 安装包** (`Setup.exe`) | Intel / AMD 64位 Windows 10 & 11 (主流推荐) | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) |
-            | **Windows x64 便携版** (`Portable.zip`) | Intel / AMD 64位绿色解压即用版 | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
-            | **Windows x86 便携版** (`Portable.zip`) | Intel / AMD 32位老设备兼容绿色版 | [TaskCleaner-Windows-x86-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Portable.zip) |
-            | **Windows ARM64 便携版** (`ARM64.zip`) | 骁龙 X Elite / Surface Pro ARM 版 | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
+            | **Windows x64 安装程序** (`Setup.exe`) | 64位 Windows 10 & 11 (x86_64) | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) |
+            | **Windows x64 便携包** (`Portable.zip`) | 64位 Windows 10 & 11 (x86_64) | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
+            | **Windows x86 便携包** (`Portable.zip`) | 32位 Windows (i686) | [TaskCleaner-Windows-x86-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Portable.zip) |
+            | **Windows ARM64 便携包** (`ARM64.zip`) | 64位 Windows on ARM (aarch64) | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
 
             ### 校验和验证 / SHA-256 Checksum Verification
             在 PowerShell 中执行以下命令核对安装包哈希值：

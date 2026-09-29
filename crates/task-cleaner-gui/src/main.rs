@@ -31,9 +31,9 @@ mod win_gui {
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, ClientToScreen, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC,
         CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW,
-        EndPaint, FillRect, GetDC, GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint,
+        EndPaint, FillRect, GetDC, GetMonitorInfoW, InvalidateRect, MonitorFromPoint,
         ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER,
-        BI_RGB, BLACK_BRUSH, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
+        BI_RGB, CLEARTYPE_QUALITY, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
         DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_MEDIUM, FW_NORMAL, FW_SEMIBOLD, HBITMAP,
         HBRUSH, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_NULL, PS_SOLID,
         SRCCOPY, TRANSPARENT,
@@ -52,7 +52,7 @@ mod win_gui {
         HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WRITE, REG_SZ,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        CreateMutexW, OpenProcess, TerminateProcess, PROCESS_TERMINATE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         EnableWindow, GetKeyState, RegisterHotKey, TrackMouseEvent, UnregisterHotKey, MOD_ALT,
@@ -68,8 +68,8 @@ mod win_gui {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, GetClientRect,
-        GetCursorPos, GetMessageW, GetSystemMetrics, IsWindow, KillTimer, LoadCursorW, MessageBoxW,
+        DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIconEx, FindWindowW, GetClientRect,
+        GetCursorPos, GetMessageW, GetSystemMetrics, IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
         PostQuitMessage, PrivateExtractIconsW, RegisterClassExW, SetForegroundWindow, SetTimer,
         SetWindowPos, ShowWindow, SystemParametersInfoW, TrackPopupMenuEx, TranslateMessage,
         CS_DROPSHADOW, DI_NORMAL, HICON, HMENU, HWND_TOPMOST, ICONINFO, IDC_ARROW,
@@ -417,6 +417,7 @@ mod win_gui {
             None
         }
 
+        #[allow(dead_code)]
         fn is_installed() -> bool {
             Self::find_installed_cli().is_some()
         }
@@ -697,8 +698,11 @@ mod win_gui {
         nid.uID = 1;
         nid.uFlags = NIF_TIP;
         let tip = to_wstring(text);
-        let len = tip.len().min(nid.szTip.len());
-        nid.szTip[..len].copy_from_slice(&tip[..len]);
+        let max_len = 127.min(tip.len());
+        for i in 0..max_len {
+            nid.szTip[i] = tip[i];
+        }
+        nid.szTip[max_len] = 0;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 
@@ -3321,6 +3325,29 @@ mod win_gui {
         let h_instance = unsafe { GetModuleHandleW(std::ptr::null()) };
         let class_name = to_wstring("TaskCleanerTrayWindow");
 
+        let mutex_name = to_wstring("TaskCleaner_Win32_SingleInstance_Mutex_2026");
+        let h_mutex = unsafe {
+            CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr())
+        };
+        let last_err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if last_err == 183 /* ERROR_ALREADY_EXISTS */ {
+            let existing_hwnd = unsafe {
+                FindWindowW(class_name.as_ptr(), std::ptr::null())
+            };
+            if existing_hwnd != 0 as HWND {
+                unsafe {
+                    ShowWindow(existing_hwnd, SW_SHOW);
+                    SetForegroundWindow(existing_hwnd);
+                }
+            }
+            if h_mutex != 0 as HANDLE {
+                unsafe { CloseHandle(h_mutex); }
+            }
+            return;
+        }
+
+        let h_app_icon = unsafe { LoadIconW(h_instance, 1 as *const u16) };
+
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_DROPSHADOW,
@@ -3328,12 +3355,12 @@ mod win_gui {
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: h_instance,
-            hIcon: 0 as HICON,
+            hIcon: h_app_icon,
             hCursor: unsafe { LoadCursorW(0 as HINSTANCE, IDC_ARROW) },
             hbrBackground: 0 as HBRUSH,
             lpszMenuName: std::ptr::null(),
             lpszClassName: class_name.as_ptr(),
-            hIconSm: 0 as HICON,
+            hIconSm: h_app_icon,
         };
 
         unsafe {
@@ -3388,8 +3415,11 @@ mod win_gui {
         nid.hIcon = h_icon;
 
         let tip = to_wstring("Task Cleaner (Windows 11)");
-        let len = tip.len().min(nid.szTip.len());
-        nid.szTip[..len].copy_from_slice(&tip[..len]);
+        let max_len = 127.min(tip.len());
+        for i in 0..max_len {
+            nid.szTip[i] = tip[i];
+        }
+        nid.szTip[max_len] = 0;
 
         unsafe {
             Shell_NotifyIconW(NIM_ADD, &nid);
@@ -3450,6 +3480,9 @@ mod win_gui {
                 }
             }
             CoUninitialize();
+            if h_mutex != 0 as HANDLE {
+                CloseHandle(h_mutex);
+            }
         }
     }
 }
