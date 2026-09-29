@@ -6,6 +6,10 @@
 #define MyAppVersion "1.0.0"
 #endif
 
+#ifndef AppArch
+#define AppArch "x64"
+#endif
+
 #define MyAppName "Task Cleaner"
 #define MyAppPublisher "DonJone"
 #define MyAppURL "https://github.com/macos-task-cleaner/windows-task-cleaner-gui"
@@ -28,14 +32,22 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
 OutputDir=dist
-OutputBaseFilename=TaskCleaner-Windows-x64-Setup
+OutputBaseFilename=TaskCleaner-Windows-{#AppArch}-Setup
 SetupIconFile=app.ico
 UninstallDisplayIcon={app}\app.ico
 UninstallDisplayName={#MyAppName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+
+#if AppArch == "x64"
 ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=x64compatible
+#elif AppArch == "arm64"
+ArchitecturesInstallIn64BitMode=arm64
+ArchitecturesAllowed=arm64
+#endif
+
 CloseApplications=yes
 CloseApplicationsFilter=TaskCleaner.exe,mtc.exe
 AppMutex=TaskCleaner_Win32_SingleInstance_Mutex_2026
@@ -57,8 +69,8 @@ Name: "startupicon"; Description: "开机自动启动 Task Cleaner"; GroupDescri
 Name: "addtopath"; Description: "将 mtc 命令行工具添加至用户 PATH 环境变量"; GroupDescription: "环境配置"
 
 [Files]
-Source: "publish\x64\TaskCleaner.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "publish\x64\mtc.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish\{#AppArch}\TaskCleaner.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish\{#AppArch}\mtc.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "COMMERCIAL.md"; DestDir: "{app}"; Flags: ignoreversion

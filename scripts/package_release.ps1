@@ -112,12 +112,36 @@ if (-not (Test-Path $isccPath)) {
 }
 
 if (Test-Path $isccPath) {
-    & $isccPath "/DMyAppVersion=$Version" "installer.iss"
+    # 3.1 x64 Setup
+    Write-Host "  * Compiling x64 Setup.exe..." -ForegroundColor Cyan
+    & $isccPath "/DMyAppVersion=$Version" "/DAppArch=x64" "installer.iss"
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  [ERROR] Inno Setup compilation failed with exit code $LASTEXITCODE." -ForegroundColor Red
+        Write-Host "  [ERROR] Inno Setup x64 compilation failed with exit code $LASTEXITCODE." -ForegroundColor Red
         exit $LASTEXITCODE
     }
     Write-Host "  * Setup Exe created: $distDir\TaskCleaner-Windows-x64-Setup.exe" -ForegroundColor Green
+
+    # 3.2 x86 Setup
+    if ($BuildX86 -and (Test-Path (Join-Path $publishX86 "TaskCleaner.exe"))) {
+        Write-Host "  * Compiling x86 Setup.exe..." -ForegroundColor Cyan
+        & $isccPath "/DMyAppVersion=$Version" "/DAppArch=x86" "installer.iss"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [ERROR] Inno Setup x86 compilation failed with exit code $LASTEXITCODE." -ForegroundColor Red
+            exit $LASTEXITCODE
+        }
+        Write-Host "  * Setup Exe created: $distDir\TaskCleaner-Windows-x86-Setup.exe" -ForegroundColor Green
+    }
+
+    # 3.3 ARM64 Setup
+    if ($BuildArm64 -and (Test-Path (Join-Path $publishArm64 "TaskCleaner.exe"))) {
+        Write-Host "  * Compiling ARM64 Setup.exe..." -ForegroundColor Cyan
+        & $isccPath "/DMyAppVersion=$Version" "/DAppArch=arm64" "installer.iss"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [ERROR] Inno Setup ARM64 compilation failed with exit code $LASTEXITCODE." -ForegroundColor Red
+            exit $LASTEXITCODE
+        }
+        Write-Host "  * Setup Exe created: $distDir\TaskCleaner-Windows-arm64-Setup.exe" -ForegroundColor Green
+    }
 } else {
     Write-Host "  [WARN] Inno Setup compiler (ISCC.exe) not found." -ForegroundColor Yellow
     Write-Host "  To build Setup.exe locally: winget install JRSoftware.InnoSetup" -ForegroundColor Yellow

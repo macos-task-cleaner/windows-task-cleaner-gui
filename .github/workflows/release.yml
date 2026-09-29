@@ -11,13 +11,13 @@ on:
         required: false
         default: ''
       publish_release:
-        description: '是否发布到 GitHub Release (默认发布；若取消勾选则仅打 tag 不建 Release)'
+        description: '是否发布到 GitHub Release (默认不发布；若勾选则建 Release)'
         type: boolean
-        default: true
+        default: false
       prerelease:
         description: '是否标记为预发布 (Pre-release)'
         type: boolean
-        default: false
+        default: true
   push:
     tags:
       - 'v*'
@@ -59,7 +59,7 @@ jobs:
           } elseif ($eventName -eq "workflow_dispatch") {
             $inputTag = "${{ github.event.inputs.tag }}"
             if ([string]::IsNullOrWhiteSpace($inputTag)) {
-              $tagName = "v" + (Get-Date -Format "yyyy.MM.dd")
+              $tagName = "pre-" + (Get-Date -Format "yyyy.MM.dd")
             } else {
               $tagName = $inputTag
             }
@@ -89,7 +89,7 @@ jobs:
           .\scripts\package_release.ps1 -Version "${{ steps.meta.outputs.version_num }}" -BuildArm64 -BuildX86
 
       - name: Create and Push Git Tag
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && steps.meta.outputs.publish_release == 'true'
         shell: pwsh
         run: |
           $tagName = "${{ steps.meta.outputs.tag }}"
@@ -123,17 +123,16 @@ jobs:
 
             支持独立安装程序与便携免安装包。安装程序自动完成应用注册与用户 PATH 环境变量配置。
 
-            | 架构与分发形态 / Distribution | 适用环境 / Environment | 安装包/便携包直链下载 / Direct Download |
-            | :--- | :--- | :--- |
-            | **Windows x64 安装程序** (`Setup.exe`) | 64位 Windows 10 & 11 (x86_64) | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) |
-            | **Windows x64 便携包** (`Portable.zip`) | 64位 Windows 10 & 11 (x86_64) | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
-            | **Windows x86 便携包** (`Portable.zip`) | 32位 Windows (i686) | [TaskCleaner-Windows-x86-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Portable.zip) |
-            | **Windows ARM64 便携包** (`ARM64.zip`) | 64位 Windows on ARM (aarch64) | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
+            | 架构 / Architecture | 适用环境 / Environment | 安装程序 / Setup Installer | 便携包 / Portable ZIP |
+            | :--- | :--- | :--- | :--- |
+            | **Windows x64** | 64位 Windows 10 & 11 (x86_64) | [TaskCleaner-Windows-x64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Setup.exe) | [TaskCleaner-Windows-x64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x64-Portable.zip) |
+            | **Windows x86** | 32位 Windows (i686) | [TaskCleaner-Windows-x86-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Setup.exe) | [TaskCleaner-Windows-x86-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-x86-Portable.zip) |
+            | **Windows ARM64** | 64位 Windows on ARM (aarch64) | [TaskCleaner-Windows-arm64-Setup.exe](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Setup.exe) | [TaskCleaner-Windows-arm64-Portable.zip](https://github.com/macos-task-cleaner/windows-task-cleaner-gui/releases/download/${{ steps.meta.outputs.tag }}/TaskCleaner-Windows-arm64-Portable.zip) |
 
             ### 校验和验证 / SHA-256 Checksum Verification
             在 PowerShell 中执行以下命令核对安装包哈希值：
             ```powershell
-            Get-FileHash -Algorithm SHA256 .\TaskCleaner-Windows-x64-Setup.exe
+            Get-FileHash -Algorithm SHA256 .\TaskCleaner-Windows-*-Setup.exe
             ```
           files: |
             dist/*.exe
